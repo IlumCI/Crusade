@@ -66,21 +66,36 @@ fn load_geo(dir: &Path) -> Result<GeoAsnDb> {
 }
 
 fn load_vulns(dir: &Path) -> Result<VulnDb> {
-    // Any file named nvdcve-*.json in data/ is treated as an NVD 1.1 feed.
-    let mut nvd = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("nvdcve-") && name.ends_with(".json") {
-                if let Ok(txt) = std::fs::read_to_string(entry.path()) {
-                    nvd.push(txt);
-                }
-            }
+    // Any file named nvdcve-*.json in data/ is an NVD feed (JSON 2.0 or the
+    // retired 1.1 schema). Files load in name order and later CVE ids win, so
+    // 2.0 feeds supersede 1.1 ones and `nvdcve-2.0-modified` comes last.
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    let name = p.file_name().unwrap_or_default().to_string_lossy();
+                    name.starts_with("nvdcve-") && name.ends_with(".json")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    paths.sort();
+    let mut entries = Vec::new();
+    for path in &paths {
+        let parsed = std::fs::read_to_string(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|txt| crusade_vuln::load_nvd(&txt));
+        match parsed {
+            Ok(e) => entries.extend(e),
+            Err(e) => warn!("skipping NVD feed {} ({e:#})", path.display()),
         }
     }
-    let kev_path = dir.join("known_exploited_vulnerabilities.json");
-    let kev = std::fs::read_to_string(&kev_path).ok();
-    let mut db = VulnDb::from_feeds(&nvd, kev.as_deref())?;
+    let kev = match std::fs::read_to_string(dir.join("known_exploited_vulnerabilities.json")) {
+        Ok(txt) => crusade_vuln::load_kev(&txt)?,
+        Err(_) => Default::default(),
+    };
+    let mut db = VulnDb::from_entries(entries, kev);
 
     // Exploit cross-reference feeds (best-effort; absent feeds are fine).
     let edb = std::fs::read_to_string(dir.join("files_exploits.csv")).ok();

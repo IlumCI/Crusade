@@ -30,8 +30,8 @@ pub mod exploit;
 pub mod heuristics;
 
 pub use cve::{
-    load_kev, load_nvd, parse_cpe, version_cmp, CpeMatch, CveEntry, KevCatalog, KevEntry,
-    ParsedCpe, VulnDb,
+    load_kev, load_nvd, parse_cpe, to_nvd2_json, version_cmp, CpeMatch, CveEntry, KevCatalog,
+    KevEntry, ParsedCpe, VulnDb,
 };
 pub use exploit::{parse_exploitdb_csv, parse_metasploit_json, ExploitRefs};
 pub use heuristics::heuristic_tags;

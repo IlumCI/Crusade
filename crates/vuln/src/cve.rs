@@ -4,9 +4,11 @@
 //! feeds that an operator can download by hand (no network access happens
 //! here):
 //!
-//! * **NVD JSON feeds** (the classic 1.1 data-feed schema): per CVE we keep the
-//!   id, the English description, and the list of *vulnerable* CPE match rules
-//!   (`cpe23Uri` plus any simple `versionStart*/versionEnd*` bounds).
+//! * **NVD JSON feeds**, either the current CVE API 2.0 / JSON 2.0 feed schema
+//!   (`vulnerabilities[].cve`, `cpeMatch[].criteria`) or the retired 1.1
+//!   data-feed schema (`CVE_Items`, `cpe23Uri`). Per CVE we keep the id, the
+//!   English description, and the list of *vulnerable* CPE match rules plus any
+//!   simple `versionStart*/versionEnd*` bounds.
 //! * **The CISA KEV catalog** (`known_exploited_vulnerabilities.json`): the set
 //!   of CVE ids that are known to be exploited in the wild, with vendor/product.
 //!
@@ -133,6 +135,8 @@ impl KevCatalog {
 #[derive(Debug, Clone, Default)]
 pub struct VulnDb {
     cves: Vec<CveEntry>,
+    /// Lower-cased CPE product -> indices into `cves` that carry a rule for it.
+    by_product: HashMap<String, Vec<usize>>,
     kev: KevCatalog,
     /// CVE (upper-cased) → known public exploits, populated additively by
     /// [`VulnDb::load_exploits`]. Empty until exploit feeds are loaded.
@@ -147,21 +151,51 @@ impl VulnDb {
 
     /// Build a database from several NVD feed JSON documents plus an optional
     /// KEV catalog JSON document.
+    ///
+    /// A CVE id seen in a later feed replaces the earlier entry, so passing the
+    /// yearly feeds followed by the `modified` feed yields the newest data.
     pub fn from_feeds(nvd_jsons: &[String], kev_json: Option<&str>) -> anyhow::Result<Self> {
-        let mut cves = Vec::new();
+        let mut parsed = Vec::new();
         for (i, json) in nvd_jsons.iter().enumerate() {
-            let parsed = load_nvd(json).with_context(|| format!("parsing NVD feed #{i}"))?;
-            cves.extend(parsed);
+            parsed.push(load_nvd(json).with_context(|| format!("parsing NVD feed #{i}"))?);
         }
         let kev = match kev_json {
             Some(j) => load_kev(j).context("parsing CISA KEV catalog")?,
             None => KevCatalog::default(),
         };
-        Ok(VulnDb {
+        Ok(VulnDb::from_entries(parsed.into_iter().flatten(), kev))
+    }
+
+    /// Build a database from already-parsed entries (later ids win).
+    pub fn from_entries(entries: impl IntoIterator<Item = CveEntry>, kev: KevCatalog) -> Self {
+        let mut pos: HashMap<String, usize> = HashMap::new();
+        let mut cves: Vec<CveEntry> = Vec::new();
+        for e in entries {
+            match pos.get(&e.id) {
+                Some(&i) => cves[i] = e,
+                None => {
+                    pos.insert(e.id.clone(), cves.len());
+                    cves.push(e);
+                }
+            }
+        }
+        let mut by_product: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, cve) in cves.iter().enumerate() {
+            let mut seen: Vec<String> = Vec::new();
+            for m in &cve.matches {
+                let key = m.product.to_ascii_lowercase();
+                if !seen.contains(&key) {
+                    by_product.entry(key.clone()).or_default().push(i);
+                    seen.push(key);
+                }
+            }
+        }
+        VulnDb {
             cves,
+            by_product,
             kev,
             exploits: HashMap::new(),
-        })
+        }
     }
 
     /// Mutable access to the exploit index, for [`VulnDb::load_exploits`].
@@ -204,8 +238,11 @@ impl VulnDb {
             return Vec::new();
         };
 
+        let Some(candidates) = self.by_product.get(&product.to_ascii_lowercase()) else {
+            return Vec::new();
+        };
         let mut tags = Vec::new();
-        for cve in &self.cves {
+        for cve in candidates.iter().map(|&i| &self.cves[i]) {
             if cve.matches.iter().any(|m| m.applies(product, version)) {
                 tags.push(Tag {
                     name: "cve".to_string(),
@@ -277,10 +314,40 @@ impl VulnDb {
 // Feed parsing
 // ---------------------------------------------------------------------------
 
-/// Parse the vulnerable-CPE subset of an NVD 1.1 JSON data feed.
+/// Parse the vulnerable-CPE subset of an NVD JSON feed.
+///
+/// Accepts both the JSON 2.0 schema (CVE API 2.0 responses and the
+/// `nvdcve-2.0-*.json` bulk feeds) and the retired 1.1 data-feed schema.
 pub fn load_nvd(json: &str) -> anyhow::Result<Vec<CveEntry>> {
     let feed: NvdFeed = serde_json::from_str(json).context("invalid NVD JSON")?;
-    let mut out = Vec::with_capacity(feed.cve_items.len());
+    let mut out = Vec::with_capacity(feed.cve_items.len() + feed.vulnerabilities.len());
+
+    for v in feed.vulnerabilities {
+        let cve = v.cve;
+        if cve.id.is_empty() {
+            continue;
+        }
+        let description = cve
+            .descriptions
+            .into_iter()
+            .find(|d| d.lang == "en")
+            .map(|d| d.value)
+            .unwrap_or_default();
+        let mut matches = Vec::new();
+        for cfg in &cve.configurations {
+            for node in &cfg.nodes {
+                for cm in &node.cpe_match {
+                    push_match(cm, &mut matches);
+                }
+            }
+        }
+        out.push(CveEntry {
+            id: cve.id,
+            description,
+            matches,
+        });
+    }
+
     for item in feed.cve_items {
         let id = item.cve.meta.id;
         if id.is_empty() {
@@ -310,32 +377,85 @@ pub fn load_nvd(json: &str) -> anyhow::Result<Vec<CveEntry>> {
     Ok(out)
 }
 
+/// Serialize entries as a compact NVD JSON 2.0 document that [`load_nvd`]
+/// reads back. Used by `update-data` to store only the matchable subset of the
+/// (very large) upstream feeds.
+pub fn to_nvd2_json(entries: &[CveEntry]) -> String {
+    let vulns: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let cpe_match: Vec<serde_json::Value> = e
+                .matches
+                .iter()
+                .map(|m| {
+                    let mut o = serde_json::json!({
+                        "vulnerable": true,
+                        "criteria": format!(
+                            "cpe:2.3:a:{}:{}:{}:*:*:*:*:*:*:*",
+                            m.vendor,
+                            m.product,
+                            m.version.as_deref().unwrap_or("*")
+                        ),
+                    });
+                    let bounds = [
+                        ("versionStartIncluding", &m.version_start_including),
+                        ("versionStartExcluding", &m.version_start_excluding),
+                        ("versionEndIncluding", &m.version_end_including),
+                        ("versionEndExcluding", &m.version_end_excluding),
+                    ];
+                    for (k, v) in bounds {
+                        if let Some(v) = v {
+                            o[k] = serde_json::Value::String(v.clone());
+                        }
+                    }
+                    o
+                })
+                .collect();
+            serde_json::json!({
+                "cve": {
+                    "id": e.id,
+                    "descriptions": [{ "lang": "en", "value": e.description }],
+                    "configurations": [{ "nodes": [{ "cpeMatch": cpe_match }] }],
+                }
+            })
+        })
+        .collect();
+    serde_json::json!({ "format": "NVD_CVE", "version": "2.0", "vulnerabilities": vulns })
+        .to_string()
+}
+
 /// Recursively collect vulnerable `cpe_match` rules from a node and its
 /// children.
 fn collect_matches(node: &NvdNode, out: &mut Vec<CpeMatch>) {
     for cm in &node.cpe_match {
-        if !cm.vulnerable {
-            continue;
-        }
-        if let Some(parsed) = parse_cpe(&cm.cpe23_uri) {
-            // A CPE match must name a vendor+product to be usable.
-            let (Some(vendor), Some(product)) = (parsed.vendor, parsed.product) else {
-                continue;
-            };
-            out.push(CpeMatch {
-                vendor,
-                product,
-                version: parsed.version,
-                version_start_including: cm.version_start_including.clone(),
-                version_start_excluding: cm.version_start_excluding.clone(),
-                version_end_including: cm.version_end_including.clone(),
-                version_end_excluding: cm.version_end_excluding.clone(),
-            });
-        }
+        push_match(cm, out);
     }
     for child in &node.children {
         collect_matches(child, out);
     }
+}
+
+/// Convert one vulnerable match rule (either schema) into a [`CpeMatch`].
+fn push_match(cm: &NvdCpeMatch, out: &mut Vec<CpeMatch>) {
+    if !cm.vulnerable {
+        return;
+    }
+    let Some(parsed) = parse_cpe(&cm.cpe23_uri) else {
+        return;
+    };
+    // A CPE match must name a vendor+product to be usable.
+    let (Some(vendor), Some(product)) = (parsed.vendor, parsed.product) else {
+        return;
+    };
+    out.push(CpeMatch {
+        vendor,
+        product,
+        version: parsed.version,
+        version_start_including: cm.version_start_including.clone(),
+        version_start_excluding: cm.version_start_excluding.clone(),
+        version_end_including: cm.version_end_including.clone(),
+        version_end_excluding: cm.version_end_excluding.clone(),
+    });
 }
 
 /// Parse the CISA KEV catalog JSON.
@@ -436,13 +556,44 @@ fn short_detail(desc: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Serde shapes for the NVD 1.1 feed (tolerant subset)
+// Serde shapes for the NVD 2.0 and 1.1 feeds (tolerant subset)
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct NvdFeed {
+    /// 1.1 data-feed schema.
     #[serde(rename = "CVE_Items", default)]
     cve_items: Vec<NvdItem>,
+    /// 2.0 schema (API responses and bulk feeds).
+    #[serde(default)]
+    vulnerabilities: Vec<Nvd2Vuln>,
+}
+
+#[derive(Deserialize)]
+struct Nvd2Vuln {
+    cve: Nvd2Cve,
+}
+
+#[derive(Deserialize)]
+struct Nvd2Cve {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    descriptions: Vec<NvdDescData>,
+    #[serde(default)]
+    configurations: Vec<Nvd2Config>,
+}
+
+#[derive(Deserialize)]
+struct Nvd2Config {
+    #[serde(default)]
+    nodes: Vec<Nvd2Node>,
+}
+
+#[derive(Deserialize)]
+struct Nvd2Node {
+    #[serde(rename = "cpeMatch", default)]
+    cpe_match: Vec<NvdCpeMatch>,
 }
 
 #[derive(Deserialize)]
@@ -498,7 +649,8 @@ struct NvdNode {
 struct NvdCpeMatch {
     #[serde(default)]
     vulnerable: bool,
-    #[serde(rename = "cpe23Uri", default)]
+    /// `cpe23Uri` in 1.1, `criteria` in 2.0.
+    #[serde(rename = "cpe23Uri", alias = "criteria", default)]
     cpe23_uri: String,
     #[serde(rename = "versionStartIncluding", default)]
     version_start_including: Option<String>,
@@ -728,5 +880,87 @@ mod tests {
             "unexpected exploit-available tag: {:?}",
             host.tags
         );
+    }
+
+    const NVD2: &str = r#"{
+      "format": "NVD_CVE", "version": "2.0",
+      "vulnerabilities": [
+        { "cve": {
+            "id": "CVE-2023-38408",
+            "descriptions": [
+              { "lang": "es", "value": "otro" },
+              { "lang": "en", "value": "OpenSSH ssh-agent PKCS#11 issue." }
+            ],
+            "configurations": [
+              { "nodes": [
+                  { "operator": "OR", "negate": false, "cpeMatch": [
+                      { "vulnerable": true,
+                        "criteria": "cpe:2.3:a:openbsd:openssh:*:*:*:*:*:*:*:*",
+                        "versionEndExcluding": "9.3",
+                        "matchCriteriaId": "X" },
+                      { "vulnerable": false,
+                        "criteria": "cpe:2.3:o:linux:linux_kernel:-:*:*:*:*:*:*:*" }
+                  ] }
+              ] }
+            ]
+        } },
+        { "cve": { "id": "CVE-2000-0001", "descriptions": [] } }
+      ]
+    }"#;
+
+    #[test]
+    fn nvd2_parses_criteria_and_bounds() {
+        let entries = load_nvd(NVD2).unwrap();
+        assert_eq!(entries.len(), 2);
+        let e = &entries[0];
+        assert_eq!(e.id, "CVE-2023-38408");
+        assert_eq!(e.description, "OpenSSH ssh-agent PKCS#11 issue.");
+        assert_eq!(e.matches.len(), 1, "non-vulnerable rules are skipped");
+        assert_eq!(e.matches[0].product, "openssh");
+        assert_eq!(e.matches[0].version_end_excluding.as_deref(), Some("9.3"));
+        assert!(entries[1].matches.is_empty());
+    }
+
+    #[test]
+    fn nvd2_matches_service_case_insensitively() {
+        let db = VulnDb::from_feeds(&[NVD2.to_string()], None).unwrap();
+        let hit = db.match_service(Some("OpenSSH"), Some("8.9p1"), None);
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].cve.as_deref(), Some("CVE-2023-38408"));
+        assert!(db
+            .match_service(Some("OpenSSH"), Some("9.3"), None)
+            .is_empty());
+        assert!(db
+            .match_service(Some("nginx"), Some("1.0"), None)
+            .is_empty());
+    }
+
+    #[test]
+    fn later_feed_replaces_same_cve_id() {
+        let newer = NVD2.replace("\"9.3\"", "\"8.0\"");
+        let db = VulnDb::from_feeds(&[NVD2.to_string(), newer], None).unwrap();
+        assert_eq!(db.len(), 2);
+        assert!(db
+            .match_service(Some("openssh"), Some("8.9"), None)
+            .is_empty());
+        assert_eq!(
+            db.match_service(Some("openssh"), Some("7.4"), None).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn compact_nvd2_roundtrips() {
+        let v1 = load_nvd(NVD).unwrap();
+        let back = load_nvd(&to_nvd2_json(&v1)).unwrap();
+        assert_eq!(back.len(), v1.len());
+        assert_eq!(back[0].id, v1[0].id);
+        assert_eq!(back[0].description, v1[0].description);
+        assert_eq!(back[0].matches.len(), v1[0].matches.len());
+        let (a, b) = (&v1[0].matches[0], &back[0].matches[0]);
+        assert_eq!(a.product, b.product);
+        assert_eq!(a.version, b.version);
+        assert_eq!(a.version_start_including, b.version_start_including);
+        assert_eq!(a.version_end_excluding, b.version_end_excluding);
     }
 }
