@@ -313,6 +313,33 @@ pub struct IndexTemplate {
 
 /// The host-detail page.
 #[derive(Template)]
+#[template(path = "similar.html")]
+pub struct SimilarTemplate {
+    /// Free-text query, if any.
+    pub q: String,
+    /// `ip:port/transport` of the service used as the query, if any.
+    pub like: String,
+    /// Crusade query the results were restricted to, if any.
+    pub filter: String,
+    /// Set when no embedding model is installed.
+    pub unavailable: bool,
+    /// Number of vectors indexed under the active model.
+    pub indexed: i64,
+    pub hits: Vec<SimilarRow>,
+}
+
+/// One row of the similarity results.
+pub struct SimilarRow {
+    pub ip: String,
+    pub port: u16,
+    pub transport: String,
+    /// Similarity as a percentage, for the bar width.
+    pub pct: u32,
+    pub score: String,
+    pub text: String,
+}
+
+#[derive(Template)]
 #[template(path = "host.html")]
 pub struct HostTemplate {
     pub ip: String,

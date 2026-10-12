@@ -649,8 +649,13 @@ async fn cmd_serve(cfg: &Config, bind: Option<String>) -> Result<()> {
     let store = Store::open(&cfg.database.path)?;
     let shared = Arc::new(Mutex::new(store));
     let screens = cfg.data.dir.join("screens");
+    // Semantic similarity is served only when the model is installed.
+    let embedder = pipeline::load_embedder(&cfg.data.dir).map(Arc::new);
+    if embedder.is_none() {
+        eprintln!("(no embedding model; /similar disabled — run `crusade update-data`)");
+    }
     println!("Crusade web UI on http://{addr}");
-    crusade_web::serve_with(addr, shared, Some(screens)).await
+    crusade_web::serve_with_embedder(addr, shared, Some(screens), embedder).await
 }
 
 async fn cmd_monitor(

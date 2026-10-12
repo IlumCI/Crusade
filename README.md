@@ -91,6 +91,9 @@ int8-quantised in SQLite and ranked by exact cosine similarity. Static models
 match vocabulary well ("ubuntu apache", "ssh server") and paraphrases less
 well. Without the model the feature is simply off.
 
+The web UI exposes the same ranking at `/similar` (and `/api/similar`), with a
+"similar services" pivot on every service of a host page.
+
 Each probed service can carry a JARM fingerprint, favicon mmh3 hash, TLS
 version/cipher, detected technologies and security headers, and (for SSH) the
 HASSH, offered KEX algorithms and host-key type — all pivotable in the query

@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::views::{
     facet_max, AlertView, HistoryTemplate, HostRow, HostTemplate, IndexTemplate, NotFoundTemplate,
-    StatsTemplate, TrendsTemplate,
+    SimilarRow, SimilarTemplate, StatsTemplate, TrendsTemplate,
 };
-use crate::SharedStore;
+use crate::{AppState, SharedStore};
 
 /// Results per search page.
 const PAGE_SIZE: usize = 25;
@@ -295,4 +295,172 @@ pub async fn api_map(State(store): State<SharedStore>) -> Response {
         })
         .collect();
     Json(points).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Semantic similarity
+// ---------------------------------------------------------------------------
+
+/// Results per similarity page.
+const SIMILAR_LIMIT: usize = 50;
+/// Longest description shown per row.
+const SIMILAR_TEXT_CHARS: usize = 110;
+
+/// Query string for `/similar` and `/api/similar`.
+#[derive(Debug, Default, Deserialize)]
+pub struct SimilarParams {
+    /// Free text to search by meaning.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// An indexed service to use as the query: `IP:PORT` or `IP:PORT/udp`.
+    #[serde(default)]
+    pub like: Option<String>,
+    /// Restrict results to hosts matching this Crusade query.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+/// Split `IP:PORT` / `IP:PORT/udp` into its parts.
+fn parse_service_ref(s: &str) -> Option<(String, u16, String)> {
+    let (addr, transport) = match s.rsplit_once('/') {
+        Some((a, t)) if t == "tcp" || t == "udp" => (a, t),
+        _ => (s, "tcp"),
+    };
+    let sock: std::net::SocketAddr = addr.parse().ok()?;
+    Some((sock.ip().to_string(), sock.port(), transport.to_string()))
+}
+
+/// Shorten and flatten a service description for one table row.
+fn one_line(text: &str, max: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    flat.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+}
+
+/// Rank services by embedding similarity. Returns the hits plus how many
+/// vectors are indexed, or `None` when no model is installed.
+async fn rank_similar(
+    state: &AppState,
+    params: &SimilarParams,
+) -> Option<(Vec<crusade_store::SimilarHit>, i64)> {
+    let embedder = state.embedder.as_ref()?;
+    let model = embedder.name();
+
+    let filter = params
+        .filter
+        .as_deref()
+        .filter(|f| !f.trim().is_empty())
+        .and_then(|f| parse(f).ok());
+
+    let store = state.store.lock().await;
+    let indexed = store.vector_count(model).unwrap_or(0);
+
+    // Either an indexed service or free text supplies the query vector.
+    let query_vec = match params.like.as_deref().filter(|l| !l.trim().is_empty()) {
+        Some(reference) => {
+            let (ip, port, transport) = parse_service_ref(reference)?;
+            store.service_vector(model, &ip, port, &transport).ok()??
+        }
+        None => {
+            let text = params.q.as_deref().unwrap_or_default();
+            if text.trim().is_empty() {
+                return Some((Vec::new(), indexed));
+            }
+            embedder.embed_one(text)
+        }
+    };
+
+    let hits = store
+        .similar_services(model, &query_vec, filter.as_ref(), SIMILAR_LIMIT)
+        .unwrap_or_default();
+    Some((hits, indexed))
+}
+
+/// `GET /similar?q=&like=&filter=`
+pub async fn similar(
+    State(state): State<AppState>,
+    Query(params): Query<SimilarParams>,
+) -> Response {
+    let q = params.q.clone().unwrap_or_default();
+    let like = params.like.clone().unwrap_or_default();
+    let filter = params.filter.clone().unwrap_or_default();
+
+    let Some((hits, indexed)) = rank_similar(&state, &params).await else {
+        return render(SimilarTemplate {
+            q,
+            like,
+            filter,
+            // Distinguish "no model" from "model present, reference not found":
+            // only the former leaves the state without an embedder.
+            unavailable: state.embedder.is_none(),
+            indexed: 0,
+            hits: Vec::new(),
+        });
+    };
+
+    // Describe each hit from its stored service record.
+    let mut rows = Vec::with_capacity(hits.len());
+    {
+        let store = state.store.lock().await;
+        for h in hits {
+            let text = store
+                .get_host(&h.ip)
+                .ok()
+                .flatten()
+                .and_then(|host| {
+                    host.services
+                        .iter()
+                        .find(|s| s.port == h.port)
+                        .and_then(crusade_embed::service_text)
+                })
+                .unwrap_or_default();
+            rows.push(SimilarRow {
+                ip: h.ip,
+                port: h.port,
+                transport: h.transport,
+                pct: (h.score.max(0.0) * 100.0).round() as u32,
+                score: format!("{:.3}", h.score),
+                text: one_line(&text, SIMILAR_TEXT_CHARS),
+            });
+        }
+    }
+
+    render(SimilarTemplate {
+        q,
+        like,
+        filter,
+        unavailable: false,
+        indexed,
+        hits: rows,
+    })
+}
+
+/// `GET /api/similar?q=&like=&filter=`
+pub async fn api_similar(
+    State(state): State<AppState>,
+    Query(params): Query<SimilarParams>,
+) -> Response {
+    match rank_similar(&state, &params).await {
+        Some((hits, indexed)) => Json(serde_json::json!({
+            "query": params.q.unwrap_or_default(),
+            "like": params.like.unwrap_or_default(),
+            "indexed": indexed,
+            "results": hits,
+        }))
+        .into_response(),
+        None if state.embedder.is_none() => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "no embedding model installed; run `crusade update-data`"
+            })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no vector for that service" })),
+        )
+            .into_response(),
+    }
 }

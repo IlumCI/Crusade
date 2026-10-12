@@ -666,6 +666,7 @@ dependencies = [
  "askama",
  "axum",
  "crusade-core",
+ "crusade-embed",
  "crusade-store",
  "http-body-util",
  "serde",

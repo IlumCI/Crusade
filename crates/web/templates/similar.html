@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Crusade — Similar services{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 0.25rem">Similar services</h1>
+<p class="muted" style="margin:0 0 0.75rem">
+  Ranked by meaning, not by substring: every service is embedded from its
+  product, title, server, certificate names and banner.
+</p>
+
+<form class="searchbar" method="get" action="/similar">
+  <input type="text" name="q" value="{{ q }}" placeholder="describe a service, e.g. router admin login page">
+  <input type="hidden" name="like" value="{{ like }}">
+  <input type="text" name="filter" value="{{ filter }}" placeholder="restrict to a search, e.g. country:DE">
+  <button type="submit">Find</button>
+</form>
+
+{% if unavailable %}
+<p>No embedding model installed. Run <code>crusade update-data</code> to fetch it
+  (~30 MB, CPU-only), then <code>crusade embed</code> to index existing hosts.</p>
+{% else %}
+
+{% if !like.is_empty() %}
+<p>Services most like <b>{{ like }}</b>{% if !filter.is_empty() %} within <code>{{ filter }}</code>{% endif %}.
+  <a href="/similar">Clear</a></p>
+{% endif %}
+
+{% if hits.is_empty() %}
+<p>No matches. {{ indexed }} service vector(s) indexed{% if indexed == 0 %} — run <code>crusade embed</code> to backfill{% endif %}.</p>
+{% else %}
+<table class="facet">
+  <tr><th>Score</th><th>Service</th><th>What it looks like</th></tr>
+  {% for h in hits %}
+  <tr>
+    <td style="white-space:nowrap">
+      <div class="bar-wrap" style="width:60px;display:inline-block;vertical-align:middle">
+        <div style="width:{{ h.pct }}%;height:100%;background:var(--accent)"></div>
+      </div>
+      {{ h.score }}
+    </td>
+    <td style="white-space:nowrap"><a href="/host/{{ h.ip }}">{{ h.ip }}</a>:{{ h.port }}/{{ h.transport }}</td>
+    <td>{{ h.text }} <a class="muted" href="/similar?like={{ h.ip }}:{{ h.port }}/{{ h.transport }}">more like this</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endif %}
+{% endblock %}

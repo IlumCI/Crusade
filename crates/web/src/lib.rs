@@ -15,7 +15,9 @@
 //! - `GET /screens/:file` — captured screenshots (only via [`router_with`]).
 //! - `GET /api/search?q=&page=` — JSON `{query,total,page,results}`.
 //! - `GET /api/host/:ip` — JSON [`Host`](crusade_core::model::Host) or 404.
+//! - `GET /similar?q=&like=` — services ranked by embedding similarity.
 //! - `GET /api/map` — JSON `[{ip,lat,lon,country}]` for located hosts.
+//! - `GET /api/similar?q=&like=` — the same ranking as JSON.
 //! - `GET /healthz` — liveness probe.
 //!
 //! The store is a single rusqlite connection (`Send` but not `Sync`), so it is
@@ -28,7 +30,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::extract::FromRef;
 use axum::{routing::get, Router};
+use crusade_embed::Embedder;
 use crusade_store::Store;
 use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
@@ -37,9 +41,32 @@ use tower_http::trace::TraceLayer;
 /// Shared, lockable handle to the datastore used as axum router state.
 pub type SharedStore = Arc<Mutex<Store>>;
 
+/// Router state: the datastore, plus the embedding model when one is
+/// installed (semantic-similarity routes answer 503 without it).
+#[derive(Clone)]
+pub struct AppState {
+    pub store: SharedStore,
+    pub embedder: Option<Arc<Embedder>>,
+}
+
+impl FromRef<AppState> for SharedStore {
+    fn from_ref(state: &AppState) -> Self {
+        state.store.clone()
+    }
+}
+
 /// Build the application router over a shared store (no screenshot serving).
 pub fn router(store: SharedStore) -> Router {
     router_with(store, None)
+}
+
+/// Build the router with an embedding model mounted, enabling `/similar`.
+pub fn router_with_embedder(
+    store: SharedStore,
+    screenshots_dir: Option<PathBuf>,
+    embedder: Option<Arc<Embedder>>,
+) -> Router {
+    build_router(AppState { store, embedder }, screenshots_dir)
 }
 
 /// Build the application router, optionally mounting a static file service that
@@ -47,6 +74,16 @@ pub fn router(store: SharedStore) -> Router {
 /// served at `GET /screens/<file>` from `dir` (the filenames held in
 /// [`crusade_core::model::Service::screenshot`]).
 pub fn router_with(store: SharedStore, screenshots_dir: Option<PathBuf>) -> Router {
+    build_router(
+        AppState {
+            store,
+            embedder: None,
+        },
+        screenshots_dir,
+    )
+}
+
+fn build_router(state: AppState, screenshots_dir: Option<PathBuf>) -> Router {
     let mut app = Router::new()
         .route("/", get(handlers::index))
         .route("/host/:ip", get(handlers::host_detail))
@@ -56,6 +93,8 @@ pub fn router_with(store: SharedStore, screenshots_dir: Option<PathBuf>) -> Rout
         .route("/api/search", get(handlers::api_search))
         .route("/api/host/:ip", get(handlers::api_host))
         .route("/api/map", get(handlers::api_map))
+        .route("/similar", get(handlers::similar))
+        .route("/api/similar", get(handlers::api_similar))
         .route("/healthz", get(handlers::healthz));
 
     if let Some(dir) = screenshots_dir {
@@ -64,12 +103,27 @@ pub fn router_with(store: SharedStore, screenshots_dir: Option<PathBuf>) -> Rout
         app = app.nest_service("/screens", ServeDir::new(dir));
     }
 
-    app.with_state(store)
+    app.with_state(state)
 }
 
 /// Bind `addr` and serve the web UI until the process is terminated.
 pub async fn serve(addr: SocketAddr, store: SharedStore) -> anyhow::Result<()> {
     serve_with(addr, store, None).await
+}
+
+/// Like [`serve_with`], with an embedding model mounted for `/similar`.
+pub async fn serve_with_embedder(
+    addr: SocketAddr,
+    store: SharedStore,
+    screenshots_dir: Option<PathBuf>,
+    embedder: Option<Arc<Embedder>>,
+) -> anyhow::Result<()> {
+    let app =
+        router_with_embedder(store, screenshots_dir, embedder).layer(TraceLayer::new_for_http());
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "crusade-web listening");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
 /// Like [`serve`], but also serves screenshots from `screenshots_dir` (if any)
@@ -525,5 +579,100 @@ mod tests {
             .unwrap();
         // Missing file: a clean 404, not a panic.
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A store with two embedded services: one web, one SSH-ish.
+    fn store_with_vectors() -> SharedStore {
+        let store = seeded_store();
+        {
+            let mut s = store.try_lock().unwrap();
+            let mut other = Host::new("203.0.113.11".parse::<IpAddr>().unwrap());
+            let mut svc = Service::new(22, Transport::Tcp);
+            svc.service = Some("ssh".into());
+            svc.product = Some("OpenSSH".into());
+            svc.observed_at = OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap();
+            other.services.push(svc);
+            other.last_seen = svc_time();
+            s.upsert_host(&other).unwrap();
+
+            // Orthogonal 2-d vectors: the query picks exactly one.
+            s.set_service_vectors("203.0.113.10", "m", &[(80, "tcp".into(), vec![127, 0])])
+                .unwrap();
+            s.set_service_vectors("203.0.113.11", "m", &[(22, "tcp".into(), vec![0, 127])])
+                .unwrap();
+        }
+        store
+    }
+
+    fn svc_time() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap()
+    }
+
+    #[tokio::test]
+    async fn similar_page_without_a_model_explains_itself() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/similar?q=web+server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("No embedding model installed"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn api_similar_without_a_model_is_503() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/similar?q=web")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// `--like` needs only stored vectors, so it works without a model file.
+    #[tokio::test]
+    async fn api_similar_ranks_by_reference_service() {
+        let store = store_with_vectors();
+        // An embedder is required for the model name; reuse the stored one by
+        // going through the store directly.
+        let hits = {
+            let s = store.try_lock().unwrap();
+            let v = s.service_vector("m", "203.0.113.10", 80, "tcp").unwrap();
+            assert_eq!(v, Some(vec![127, 0]));
+            s.similar_services("m", &v.unwrap(), None, 10).unwrap()
+        };
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].ip, "203.0.113.10");
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[tokio::test]
+    async fn host_page_links_to_similar_services() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/host/203.0.113.10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("/similar?like=203.0.113.10:80/tcp"),
+            "host page should offer a similarity pivot"
+        );
     }
 }
