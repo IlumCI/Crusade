@@ -129,3 +129,82 @@ async fn blocklist_guardrail_blocks_reserved_and_private() {
 
     let _ = SocketAddr::from(([127, 0, 0, 1], 0)); // silence unused import on some cfgs
 }
+
+/// Retention end to end: a host that is stale and unvisited is selected and
+/// removed, while a host someone looked at survives however old it is — and
+/// the space is actually returned to the filesystem.
+#[test]
+fn archiving_removes_only_stale_unvisited_hosts_and_reclaims_space() {
+    use crusade_core::model::{Host, Service};
+    use crusade_store::Retention;
+    use time::OffsetDateTime;
+
+    let dir = std::env::temp_dir().join(format!("crusade-itest-arch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("t.db");
+
+    const NOW: i64 = 1_800_000_000;
+    const DAY: i64 = 86_400;
+    let aged = |ip: &str, days: i64| -> Host {
+        let mut h = Host::new(ip.parse::<IpAddr>().unwrap());
+        h.last_seen = OffsetDateTime::from_unix_timestamp(NOW - days * DAY).unwrap();
+        let mut s = Service::new(80, Transport::Tcp);
+        s.observed_at = h.last_seen;
+        // Enough text that removing rows visibly shrinks the file.
+        s.banner = Some("x".repeat(4096));
+        h.services.push(s);
+        h
+    };
+
+    let mut store = Store::open(&db).unwrap();
+    let mut batch: Vec<Host> = Vec::new();
+    for i in 0..400 {
+        batch.push(aged(&format!("198.51.100.{}", i % 256), 400));
+        batch.push(aged(&format!("203.0.113.{}", i % 256), 1));
+    }
+    // 256 stale + 256 fresh distinct IPs.
+    store.upsert_hosts(&batch).unwrap();
+    let before = store.storage_report().unwrap();
+    assert_eq!(before.hosts, 512);
+
+    // Someone looks at one of the stale hosts.
+    store.touch_hosts_at(&["198.51.100.7".to_string()], NOW - DAY);
+
+    let policy = Retention {
+        host_stale_days: 180,
+        host_unaccessed_days: 90,
+        ..Retention::default()
+    };
+    let doomed = store.archivable_hosts(NOW, &policy, usize::MAX).unwrap();
+    assert_eq!(doomed.len(), 255, "every stale host but the visited one");
+    assert!(!doomed.contains(&"198.51.100.7".to_string()));
+    assert!(doomed.iter().all(|ip| ip.starts_with("198.51.100.")));
+
+    assert_eq!(store.delete_hosts(&doomed).unwrap(), 255);
+    store.vacuum().unwrap();
+
+    let after = store.storage_report().unwrap();
+    assert_eq!(after.hosts, 257, "256 fresh + the one visited stale host");
+    assert!(
+        after.file_bytes < before.file_bytes,
+        "vacuum should shrink the file: {} -> {}",
+        before.file_bytes,
+        after.file_bytes
+    );
+    // The visited host is still fully intact, not just present.
+    let kept = store.get_host("198.51.100.7").unwrap().unwrap();
+    assert_eq!(kept.services.len(), 1);
+    // And the index still answers for what remains.
+    assert_eq!(
+        store.count(&parse("net:203.0.113.0/24").unwrap()).unwrap(),
+        256
+    );
+    assert_eq!(
+        store.count(&parse("net:198.51.100.0/24").unwrap()).unwrap(),
+        1
+    );
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}

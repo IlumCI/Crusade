@@ -174,6 +174,52 @@ whose provider permits scanning, a published abuse contact, reverse DNS
 identity and a working opt-out are what make wide scanning legitimate; see
 *Responsible use* above.
 
+## Archiving and retention
+
+Three things grow without bound: the scan timeline, the alert log, and the host
+table itself as sweeps reach new address space. Crusade decides what is
+expendable by measuring, not guessing: every host carries `last_seen` (when it
+last answered) and `last_accessed` (when it was last surfaced to someone,
+through a search page, a host view or the API). A host that has neither
+answered nor been looked at is the first thing to go; a host someone keeps
+opening is kept however old it is.
+
+```
+crusade archive --status     # where the space is going, and what qualifies
+crusade archive --dry-run    # what would be removed, changing nothing
+crusade archive              # archive, delete, reclaim
+```
+
+Hosts are written to a gzipped JSON Lines file under `<data dir>/archive/`
+**before** they are deleted — the same format `crusade export` produces, so an
+archive can be read back with the same tools. Nothing is deleted that was not
+written out first.
+
+With `[archive] max_db_mb` set, this happens on its own once the database
+passes that size, after a scan or a monitor pass. It escalates cheapest-first
+and stops as soon as the database is back under the limit:
+
+1. expired and derived rows — facet cache, old delivered alerts, finished
+   jobs, timeline entries past retention (the newest entry per service is
+   always kept);
+2. screenshots on disk that no service references any more;
+3. stale, never-visited hosts, least useful first, in bounded batches.
+
+Undelivered alerts hold their host back, so nothing is archived out from under
+an alert nobody has seen. Progress is judged by live bytes (allocated minus
+free pages) rather than file size, because deletes free pages for reuse without
+shrinking the file; one `VACUUM` at the end returns the space, and only if
+something was actually removed. A run that cannot find anything eligible says
+so instead of silently doing nothing.
+
+Measured on 30k synthetic hosts, 75% of them stale and unvisited:
+
+```
+archive --status   102.1 MiB, 30000 hosts, 27600 never viewed, 20100 eligible
+archive            20100 hosts to 11 files; 102.1 MiB -> 35.9 MiB
+auto (20 MiB cap)  6000 hosts in 3 batches; 35.9 MiB -> 13.5 MiB, then stops
+```
+
 ## Lazy loading and caching
 
 Nothing is read until something needs it, and expensive derived data is built

@@ -2,6 +2,11 @@
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
+-- NOTE: indexes over columns that an older database gains through migrate()
+-- (honeypot, pending_since, last_accessed) are created there, not here. This
+-- file is applied first, so such an index would reference a column that does
+-- not exist yet and the open would fail.
+--
 -- One row per IP ever observed. The full enriched Host is kept as JSON in
 -- `doc` for cheap round-tripping; the columns are projections used for
 -- filtering and faceting.
@@ -17,7 +22,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     ip_sort     BLOB,           -- 16-byte big-endian IP, for net:/range queries
     last_seen   INTEGER NOT NULL, -- unix seconds
     doc         TEXT NOT NULL,  -- full Host JSON
-    honeypot    REAL            -- honeypot score 0..1, NULL = unscored
+    honeypot    REAL,           -- honeypot score 0..1, NULL = unscored
+    last_accessed INTEGER       -- last surfaced to a user; NULL = never
 );
 CREATE INDEX IF NOT EXISTS idx_hosts_asn     ON hosts(asn);
 CREATE INDEX IF NOT EXISTS idx_hosts_country ON hosts(country);
@@ -60,7 +66,6 @@ CREATE INDEX IF NOT EXISTS idx_services_hassh   ON services(hassh);
 CREATE INDEX IF NOT EXISTS idx_services_transport ON services(transport);
 CREATE INDEX IF NOT EXISTS idx_services_ics     ON services(ics_protocol);
 CREATE INDEX IF NOT EXISTS idx_services_auth    ON services(auth_state);
-CREATE INDEX IF NOT EXISTS idx_services_pending ON services(pending_since);
 
 -- Tags attached to a host (vuln tags carry a cve id).
 CREATE TABLE IF NOT EXISTS tags (

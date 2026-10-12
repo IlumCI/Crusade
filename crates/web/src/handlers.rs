@@ -98,6 +98,9 @@ pub async fn index(
                 let offset = page * PAGE_SIZE;
                 let (total, exact) = store.count_capped(&query, COUNT_CAP).unwrap_or((0, true));
                 let hosts = store.search(&query, PAGE_SIZE, offset).unwrap_or_default();
+                // Surfacing a host counts as using it, so retention keeps what
+                // people actually look at.
+                store.touch_hosts(&hosts.iter().map(|h| h.ip.to_string()).collect::<Vec<_>>());
                 tpl.results = hosts.iter().map(HostRow::from).collect();
                 tpl.total = total;
                 tpl.total_exact = exact;
@@ -125,7 +128,11 @@ pub async fn index(
 pub async fn host_detail(State(store): State<SharedStore>, Path(ip): Path<String>) -> Response {
     let host = {
         let store = store.lock().await;
-        store.get_host(&ip).unwrap_or(None)
+        let host = store.get_host(&ip).unwrap_or(None);
+        if let Some(h) = &host {
+            store.touch_hosts(&[h.ip.to_string()]);
+        }
+        host
     };
     match host {
         Some(h) => render(HostTemplate::from(&h)),
@@ -249,6 +256,7 @@ pub async fn api_search(
             // The HTML page caps instead, since a human is waiting on it.
             let total = store.count(&query).unwrap_or(0);
             let results = store.search(&query, PAGE_SIZE, offset).unwrap_or_default();
+            store.touch_hosts(&results.iter().map(|h| h.ip.to_string()).collect::<Vec<_>>());
             Json(SearchResponse {
                 query: q,
                 total,
@@ -269,7 +277,11 @@ pub async fn api_search(
 pub async fn api_host(State(store): State<SharedStore>, Path(ip): Path<String>) -> Response {
     let host = {
         let store = store.lock().await;
-        store.get_host(&ip).unwrap_or(None)
+        let host = store.get_host(&ip).unwrap_or(None);
+        if let Some(h) = &host {
+            store.touch_hosts(&[h.ip.to_string()]);
+        }
+        host
     };
     match host {
         Some(h) => Json(h).into_response(),

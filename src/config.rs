@@ -15,6 +15,7 @@ pub struct Config {
     pub alert: Alert,
     pub screenshot: Screenshot,
     pub lifecycle: LifecycleCfg,
+    pub archive: ArchiveCfg,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,6 +150,51 @@ impl Default for Data {
             dir: "data".into(),
             nmap_probes: "/usr/share/nmap/nmap-service-probes".into(),
         }
+    }
+}
+
+/// Retention and automatic archiving.
+///
+/// Data that has neither answered nor been looked at for a long time is
+/// written to a gzipped archive under `<data dir>/archive/` and then deleted.
+/// With `max_db_mb` set, that happens on its own once the database grows past
+/// the limit, rather than only when `crusade archive` is run.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ArchiveCfg {
+    /// Drop timeline entries older than this many days. The newest entry per
+    /// service is always kept.
+    pub history_days: i64,
+    /// Drop delivered alerts older than this. Undelivered ones are kept.
+    pub alerts_days: i64,
+    /// Drop finished jobs older than this.
+    pub jobs_days: i64,
+    /// A host must have gone unseen this long to be archivable.
+    pub host_stale_days: i64,
+    /// ...and unvisited this long (never visited counts as forever).
+    pub host_unaccessed_days: i64,
+    /// Archive automatically once the database exceeds this many MiB.
+    /// `0` (the default) disables automatic archiving entirely.
+    pub max_db_mb: u64,
+}
+
+impl Default for ArchiveCfg {
+    fn default() -> Self {
+        ArchiveCfg {
+            history_days: 180,
+            alerts_days: 90,
+            jobs_days: 30,
+            host_stale_days: 180,
+            host_unaccessed_days: 90,
+            max_db_mb: 0,
+        }
+    }
+}
+
+impl ArchiveCfg {
+    /// The size limit in bytes, or `None` when automatic archiving is off.
+    pub fn max_db_bytes(&self) -> Option<u64> {
+        (self.max_db_mb > 0).then(|| self.max_db_mb * 1024 * 1024)
     }
 }
 

@@ -5,6 +5,7 @@
 //! blocklist in `crusade-scan`.
 
 mod alert;
+mod archive;
 mod config;
 mod pipeline;
 mod update;
@@ -206,6 +207,16 @@ enum Command {
         /// Optional query; empty = whole index.
         query: Vec<String>,
     },
+    /// Archive and delete data that is old and has never been looked at,
+    /// then reclaim the space. Writes a gzipped JSONL archive first.
+    Archive {
+        /// Report what would be removed without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Show where the space is going and stop.
+        #[arg(long)]
+        status: bool,
+    },
     /// Show scan-queue status (counts + recent jobs).
     Jobs {
         #[arg(long, default_value_t = 20)]
@@ -313,6 +324,7 @@ async fn main() -> Result<()> {
             allow_private,
         } => cmd_worker(&cfg, id, once, poll, allow_private).await,
         Command::Jobs { limit } => cmd_jobs(&cfg, limit),
+        Command::Archive { dry_run, status } => cmd_archive(&cfg, dry_run, status),
         Command::Rescore { query } => cmd_rescore(&cfg, &query.join(" ")),
         Command::Similar {
             text,
@@ -431,6 +443,7 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
         opts.screenshot || cfg.screenshot.enabled,
     )
     .await?;
+    report_auto_archive(cfg, &mut store);
     println!(
         "Indexed {} host(s). Total in store: {}.",
         hosts.len(),
@@ -578,6 +591,7 @@ async fn cmd_sweep_ingest(
         cfg.screenshot.enabled,
     )
     .await?;
+    report_auto_archive(cfg, &mut store);
     println!(
         "Indexed {} host(s). Total in store: {}.",
         hosts.len(),
@@ -591,6 +605,9 @@ fn cmd_search(cfg: &Config, raw: &str, limit: usize, json: bool) -> Result<()> {
     let store = Store::open(&cfg.database.path)?;
     let total = store.count(&q)?;
     let hosts = store.search(&q, limit, 0)?;
+    // Surfacing a host in results counts as using it: retention then keeps the
+    // hosts people actually look at, however old they are.
+    store.touch_hosts(&hosts.iter().map(|h| h.ip.to_string()).collect::<Vec<_>>());
     if json {
         println!("{}", serde_json::to_string_pretty(&hosts)?);
     } else {
@@ -628,6 +645,9 @@ fn cmd_host(cfg: &Config, ip: &str, json: bool) -> Result<()> {
             Ok(())
         }
         Some(h) => {
+            // Viewing a host counts as using it, which keeps it out of the
+            // archive selection.
+            store.touch_hosts(&[h.ip.to_string()]);
             if json {
                 println!("{}", serde_json::to_string_pretty(&h)?);
             } else {
@@ -814,6 +834,14 @@ async fn cmd_monitor(
         {
             let store = Store::open(&cfg.database.path)?;
             alert::flush_undelivered(cfg, &store).await?;
+        }
+
+        // A monitor runs indefinitely, so it is the natural place to enforce
+        // the size limit: once per pass, after alerts have been delivered (an
+        // undelivered alert holds its host back from archiving).
+        {
+            let mut store = Store::open(&cfg.database.path)?;
+            report_auto_archive(cfg, &mut store);
         }
 
         if once {
@@ -1020,6 +1048,107 @@ fn cmd_embed(cfg: &Config, raw: &str) -> Result<()> {
         embedder.name()
     );
     Ok(())
+}
+
+fn cmd_archive(cfg: &Config, dry_run: bool, status: bool) -> Result<()> {
+    use archive::human_bytes;
+    let mut store = Store::open(&cfg.database.path)?;
+
+    if status {
+        let r = store.storage_report()?;
+        println!(
+            "database {}  (allocated {}, reusable {})",
+            human_bytes(r.file_bytes),
+            human_bytes(r.allocated_bytes),
+            human_bytes(r.free_bytes)
+        );
+        println!(
+            "{} hosts, {} services, {} history entries, {} alerts; {} hosts never viewed",
+            r.hosts, r.services, r.history_rows, r.alerts, r.never_accessed
+        );
+        match cfg.archive.max_db_bytes() {
+            Some(limit) => println!(
+                "auto-archive at {} ({}% used)",
+                human_bytes(limit),
+                (r.file_bytes as f64 / limit as f64 * 100.0).round()
+            ),
+            None => println!("auto-archive off (set [archive] max_db_mb to enable)"),
+        }
+        println!("\nlargest tables and indexes:");
+        for t in r.tables.iter().take(12) {
+            let rows = if t.rows > 0 {
+                format!("{} rows", t.rows)
+            } else {
+                "-".to_string()
+            };
+            println!("  {:<24} {:>10}  {rows}", t.name, human_bytes(t.bytes));
+        }
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let eligible = store
+            .archivable_hosts(now, &archive::retention(cfg), usize::MAX)?
+            .len();
+        println!("\n{eligible} host(s) currently eligible for archiving");
+        return Ok(());
+    }
+
+    let out = archive::run(cfg, &mut store, dry_run)?;
+    if dry_run {
+        println!(
+            "Would archive {} host(s) and prune expired history/alerts/jobs. \
+             Nothing was changed.",
+            out.hosts_archived
+        );
+        return Ok(());
+    }
+    if !out.removed_anything() {
+        println!("Nothing to archive: everything is within its retention window.");
+        return Ok(());
+    }
+    println!(
+        "Archived {} host(s) to {} file(s); pruned {} history, {} alert(s), {} job(s); \
+         removed {} orphaned screenshot(s).",
+        out.hosts_archived,
+        out.files.len(),
+        out.pruned.history_rows,
+        out.pruned.alerts,
+        out.pruned.jobs,
+        out.screenshots_removed
+    );
+    for f in &out.files {
+        println!("  → {}", f.display());
+    }
+    println!(
+        "Database {} → {} ({} reclaimed{}).",
+        human_bytes(out.bytes_before),
+        human_bytes(out.bytes_after),
+        human_bytes(out.reclaimed()),
+        if out.vacuumed { "" } else { ", not vacuumed" }
+    );
+    Ok(())
+}
+
+/// Run automatic archiving if the database is over its configured limit, and
+/// say so when it does something. Never fails the caller's command.
+fn report_auto_archive(cfg: &Config, store: &mut Store) {
+    match archive::auto_archive(cfg, store) {
+        Ok(Some(out)) => {
+            eprintln!(
+                "auto-archive: {} host(s) archived, {} row(s) pruned, {} reclaimed ({} → {}){}",
+                out.hosts_archived,
+                out.pruned.total(),
+                archive::human_bytes(out.reclaimed()),
+                archive::human_bytes(out.bytes_before),
+                archive::human_bytes(out.bytes_after),
+                if out.hit_batch_limit {
+                    "; stopped at the batch limit, run `crusade archive` to continue"
+                } else {
+                    ""
+                }
+            );
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("auto-archive skipped: {e:#}"),
+    }
 }
 
 fn cmd_rescore(cfg: &Config, raw: &str) -> Result<()> {

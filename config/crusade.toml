@@ -36,6 +36,21 @@ nmap_probes = "/usr/share/nmap/nmap-service-probes"
 evict_after_hours = 72
 forget_after_days = 60
 
+[archive]
+# Retention. Data that has neither answered nor been looked at for a long time
+# is written to a gzipped JSONL archive under <data dir>/archive/ and then
+# deleted. `crusade archive --status` shows where the space is going;
+# `crusade archive --dry-run` says what would go.
+history_days         = 180   # timeline entries (newest per service always kept)
+alerts_days          = 90    # delivered alerts only; undelivered are kept
+jobs_days            = 30    # finished queue jobs
+host_stale_days      = 180   # a host must be unseen this long to qualify...
+host_unaccessed_days = 90    # ...and unvisited this long (never = forever)
+# Archive automatically once the database passes this size, after a scan or a
+# monitor pass. 0 disables it, and nothing is ever removed without a run of
+# `crusade archive`.
+max_db_mb            = 0
+
 [alert]
 # Transports for `crusade monitor`. All optional — with none set, alerts are
 # only recorded (view with `crusade alerts`).

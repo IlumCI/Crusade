@@ -5,6 +5,7 @@
 //! append-only service history and refreshes the FTS index. Reads come back as
 //! fully reconstructed [`Host`] values from the stored JSON `doc`.
 
+mod archive;
 mod compile;
 
 use anyhow::{Context, Result};
@@ -14,6 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::net::IpAddr;
 use std::path::Path;
 
+pub use archive::{Pruned, Retention, StorageReport, TableUsage};
 pub use compile::{compile, compile_count, Compiled};
 
 /// Bring databases created by older versions up to the current schema.
@@ -38,6 +40,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_column("services", "content_hash")? {
         conn.execute_batch("ALTER TABLE services ADD COLUMN content_hash INTEGER")?;
     }
+    if !has_column("hosts", "last_accessed")? {
+        conn.execute_batch("ALTER TABLE hosts ADD COLUMN last_accessed INTEGER")?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_hosts_accessed ON hosts(last_accessed, last_seen)",
+    )?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_services_pending ON services(pending_since)",
     )?;
@@ -92,7 +100,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 /// Bumped once per write transaction rather than per host: a batch of 500
 /// hosts invalidates the cache exactly as a single host does, and one extra
 /// statement per batch is free.
-fn bump_generation(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+pub(crate) fn bump_generation(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     tx.execute(
         "INSERT INTO meta (key, value) VALUES ('write_generation', '1')
          ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
@@ -356,7 +364,7 @@ fn fts_body(host: &Host) -> String {
 
 /// A handle to the Crusade database.
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 /// One row in a facet (e.g. a port and how many hosts expose it).

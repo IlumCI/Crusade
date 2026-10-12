@@ -675,4 +675,55 @@ mod tests {
             "host page should offer a similarity pivot"
         );
     }
+
+    #[tokio::test]
+    async fn viewing_a_host_records_access_for_retention() {
+        let store = seeded_store();
+        let before = {
+            let s = store.try_lock().unwrap();
+            let r = s.storage_report().unwrap();
+            assert_eq!(r.never_accessed, r.hosts, "nothing has been viewed yet");
+            r.never_accessed
+        };
+
+        let app = router(store.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/host/203.0.113.10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let after = {
+            let s = store.try_lock().unwrap();
+            s.storage_report().unwrap().never_accessed
+        };
+        assert_eq!(after, before - 1, "exactly the viewed host was recorded");
+    }
+
+    #[tokio::test]
+    async fn a_search_records_access_for_every_result() {
+        let store = seeded_store();
+        let app = router(store.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?q=port:80")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let (hosts, never) = {
+            let s = store.try_lock().unwrap();
+            let r = s.storage_report().unwrap();
+            (r.hosts, r.never_accessed)
+        };
+        assert!(hosts > never, "results should count as usage");
+    }
 }
