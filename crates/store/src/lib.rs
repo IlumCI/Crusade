@@ -38,6 +38,19 @@ pub struct Facets {
     pub tags: Vec<Facet>,
 }
 
+/// A queued scan job claimed by a `crusade worker`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Job {
+    pub id: i64,
+    pub target: String,
+    pub ports: Option<String>,
+    pub udp: bool,
+    pub ics: bool,
+    pub status: String,
+    pub worker: Option<String>,
+    pub note: Option<String>,
+}
+
 /// An alert row raised by the monitor and (optionally) delivered to transports.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Alert {
@@ -106,32 +119,53 @@ impl Store {
                 .to_string();
             let ssl_cn = svc.tls.as_ref().and_then(|t| t.subject_cn.clone());
             let tls_version = svc.tls.as_ref().and_then(|t| t.version.clone());
-            let has_shot = 0i64; // screenshots deferred to v3
+            let has_shot = i64::from(svc.screenshot.is_some());
             let (ssh_hostkey, hassh) = match &svc.ssh {
                 Some(s) => (s.host_key_sha256.clone(), s.hassh.clone()),
                 None => (None, None),
             };
             let favicon = svc.http.as_ref().and_then(|h| h.favicon_hash);
             let ics_protocol = svc.ics.as_ref().map(|i| i.protocol.clone());
-            let auth_state = svc.auth.and_then(|a| serde_json::to_value(a).ok())
+            let auth_state = svc
+                .auth
+                .and_then(|a| serde_json::to_value(a).ok())
                 .and_then(|v| v.as_str().map(str::to_string));
             tx.execute(
                 "INSERT INTO services
                    (ip, port, transport, service, product, version, cpe, ssl_cn,
                     jarm, favicon_hash, ssh_hostkey, hassh, tls_version, ics_protocol,
-                    auth_state, has_screenshot, observed_at, banner)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                    auth_state, screenshot, has_screenshot, observed_at, banner)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
                 params![
-                    ip, svc.port, transport, svc.service, svc.product, svc.version,
-                    svc.cpe, ssl_cn, svc.jarm, favicon, ssh_hostkey, hassh, tls_version,
-                    ics_protocol, auth_state, has_shot, svc.observed_at.unix_timestamp(), svc.banner
+                    ip,
+                    svc.port,
+                    transport,
+                    svc.service,
+                    svc.product,
+                    svc.version,
+                    svc.cpe,
+                    ssl_cn,
+                    svc.jarm,
+                    favicon,
+                    ssh_hostkey,
+                    hassh,
+                    tls_version,
+                    ics_protocol,
+                    auth_state,
+                    svc.screenshot,
+                    has_shot,
+                    svc.observed_at.unix_timestamp(),
+                    svc.banner
                 ],
             )?;
             tx.execute(
                 "INSERT INTO service_history (ip, port, transport, observed_at, doc)
                  VALUES (?1,?2,?3,?4,?5)",
                 params![
-                    ip, svc.port, transport, svc.observed_at.unix_timestamp(),
+                    ip,
+                    svc.port,
+                    transport,
+                    svc.observed_at.unix_timestamp(),
                     serde_json::to_string(svc)?
                 ],
             )?;
@@ -162,7 +196,10 @@ impl Store {
                 }
             }
             if let Some(ics) = &svc.ics {
-                for field in [&ics.vendor, &ics.product, &ics.device_id].into_iter().flatten() {
+                for field in [&ics.vendor, &ics.product, &ics.device_id]
+                    .into_iter()
+                    .flatten()
+                {
                     fts_body.push_str(field);
                     fts_body.push('\n');
                 }
@@ -199,7 +236,9 @@ impl Store {
     pub fn get_host(&self, ip: &str) -> Result<Option<Host>> {
         let doc: Option<String> = self
             .conn
-            .query_row("SELECT doc FROM hosts WHERE ip = ?1", params![ip], |r| r.get(0))
+            .query_row("SELECT doc FROM hosts WHERE ip = ?1", params![ip], |r| {
+                r.get(0)
+            })
             .optional()?;
         match doc {
             Some(d) => Ok(Some(serde_json::from_str(&d)?)),
@@ -232,7 +271,9 @@ impl Store {
         let sql = format!("SELECT COUNT(*) FROM ({sql})");
         let n: i64 = self
             .conn
-            .query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| r.get(0))?;
+            .query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| {
+                r.get(0)
+            })?;
         Ok(n)
     }
 
@@ -250,7 +291,10 @@ impl Store {
     fn facet_text(&self, sql: &str, top_n: usize) -> Result<Vec<Facet>> {
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params![top_n as i64], |r| {
-            Ok(Facet { value: r.get::<_, String>(0)?, count: r.get(1)? })
+            Ok(Facet {
+                value: r.get::<_, String>(0)?,
+                count: r.get(1)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -258,14 +302,19 @@ impl Store {
     fn facet_int(&self, sql: &str, top_n: usize) -> Result<Vec<Facet>> {
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params![top_n as i64], |r| {
-            Ok(Facet { value: r.get::<_, i64>(0)?.to_string(), count: r.get(1)? })
+            Ok(Facet {
+                value: r.get::<_, i64>(0)?.to_string(),
+                count: r.get(1)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Total number of hosts in the store.
     pub fn host_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM hosts", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM hosts", [], |r| r.get(0))?)
     }
 
     /// All matching host IPs for a query (no limit) — used by export/stats.
@@ -293,22 +342,38 @@ impl Store {
         })
     }
 
-    fn facet_sub_text(&self, sql: &str, params: &[rusqlite::types::Value], top_n: usize) -> Result<Vec<Facet>> {
+    fn facet_sub_text(
+        &self,
+        sql: &str,
+        params: &[rusqlite::types::Value],
+        top_n: usize,
+    ) -> Result<Vec<Facet>> {
         let mut stmt = self.conn.prepare(sql)?;
         let mut binds: Vec<rusqlite::types::Value> = params.to_vec();
         binds.push(rusqlite::types::Value::Integer(top_n as i64));
         let rows = stmt.query_map(rusqlite::params_from_iter(binds.iter()), |r| {
-            Ok(Facet { value: r.get::<_, String>(0)?, count: r.get(1)? })
+            Ok(Facet {
+                value: r.get::<_, String>(0)?,
+                count: r.get(1)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    fn facet_sub_int(&self, sql: &str, params: &[rusqlite::types::Value], top_n: usize) -> Result<Vec<Facet>> {
+    fn facet_sub_int(
+        &self,
+        sql: &str,
+        params: &[rusqlite::types::Value],
+        top_n: usize,
+    ) -> Result<Vec<Facet>> {
         let mut stmt = self.conn.prepare(sql)?;
         let mut binds: Vec<rusqlite::types::Value> = params.to_vec();
         binds.push(rusqlite::types::Value::Integer(top_n as i64));
         let rows = stmt.query_map(rusqlite::params_from_iter(binds.iter()), |r| {
-            Ok(Facet { value: r.get::<_, i64>(0)?.to_string(), count: r.get(1)? })
+            Ok(Facet {
+                value: r.get::<_, i64>(0)?.to_string(),
+                count: r.get(1)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -316,18 +381,139 @@ impl Store {
     /// Host IPs not scanned since `cutoff` (unix seconds), oldest first — the
     /// rescan queue for `crusade monitor`.
     pub fn stale_host_ips(&self, cutoff: i64, limit: usize) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT ip FROM hosts WHERE last_seen < ?1 ORDER BY last_seen ASC LIMIT ?2",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ip FROM hosts WHERE last_seen < ?1 ORDER BY last_seen ASC LIMIT ?2")?;
         let rows = stmt.query_map(params![cutoff, limit as i64], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Every host IP in the store (for a full rescan sweep).
     pub fn all_host_ips(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT ip FROM hosts ORDER BY last_seen ASC")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ip FROM hosts ORDER BY last_seen ASC")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Append-only scan history for a host: (observed_at unix seconds, Service)
+    /// snapshots, newest first. Powers the per-host timeline / trends views.
+    pub fn service_history(&self, ip: &str) -> Result<Vec<(i64, crusade_core::Service)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT observed_at, doc FROM service_history WHERE ip = ?1 ORDER BY observed_at DESC",
+        )?;
+        let rows = stmt.query_map(params![ip], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (ts, doc) = row?;
+            if let Ok(svc) = serde_json::from_str::<crusade_core::Service>(&doc) {
+                out.push((ts, svc));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Enqueue a scan job; returns its id.
+    pub fn enqueue_job(
+        &self,
+        target: &str,
+        ports: Option<&str>,
+        udp: bool,
+        ics: bool,
+    ) -> Result<i64> {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        self.conn.execute(
+            "INSERT INTO jobs (target, ports, udp, ics, status, created_at)
+             VALUES (?1,?2,?3,?4,'pending',?5)",
+            params![target, ports, udp as i64, ics as i64, now],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Atomically claim the next pending job for `worker` (oldest first), or
+    /// None if the queue is empty. Safe across concurrent workers via an
+    /// IMMEDIATE transaction on the WAL database.
+    pub fn claim_next_job(&mut self, worker: &str) -> Result<Option<Job>> {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let job = match id {
+            None => None,
+            Some(id) => {
+                tx.execute(
+                    "UPDATE jobs SET status='running', worker=?1, claimed_at=?2 WHERE id=?3",
+                    params![worker, now, id],
+                )?;
+                Some(tx.query_row(
+                    "SELECT id, target, ports, udp, ics, status, worker, note FROM jobs WHERE id=?1",
+                    params![id],
+                    Self::row_to_job,
+                )?)
+            }
+        };
+        tx.commit()?;
+        Ok(job)
+    }
+
+    /// Mark a claimed job done/failed with a short note.
+    pub fn finish_job(&self, id: i64, ok: bool, note: &str) -> Result<()> {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let status = if ok { "done" } else { "failed" };
+        self.conn.execute(
+            "UPDATE jobs SET status=?1, note=?2, finished_at=?3 WHERE id=?4",
+            params![status, note, now, id],
+        )?;
+        Ok(())
+    }
+
+    /// (pending, running, done, failed) counts.
+    pub fn job_counts(&self) -> Result<(i64, i64, i64, i64)> {
+        let one = |st: &str| -> Result<i64> {
+            Ok(self.conn.query_row(
+                "SELECT COUNT(*) FROM jobs WHERE status=?1",
+                params![st],
+                |r| r.get(0),
+            )?)
+        };
+        Ok((
+            one("pending")?,
+            one("running")?,
+            one("done")?,
+            one("failed")?,
+        ))
+    }
+
+    /// Most recent jobs, newest first.
+    pub fn recent_jobs(&self, limit: usize) -> Result<Vec<Job>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, target, ports, udp, ics, status, worker, note FROM jobs ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], Self::row_to_job)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    fn row_to_job(r: &rusqlite::Row) -> rusqlite::Result<Job> {
+        Ok(Job {
+            id: r.get(0)?,
+            target: r.get(1)?,
+            ports: r.get(2)?,
+            udp: r.get::<_, i64>(3)? != 0,
+            ics: r.get::<_, i64>(4)? != 0,
+            status: r.get(5)?,
+            worker: r.get(6)?,
+            note: r.get(7)?,
+        })
     }
 
     /// Record an alert (returns its id). `delivered` starts false.
@@ -354,7 +540,8 @@ impl Store {
     }
 
     pub fn mark_alert_delivered(&self, id: i64) -> Result<()> {
-        self.conn.execute("UPDATE alerts SET delivered = 1 WHERE id = ?1", params![id])?;
+        self.conn
+            .execute("UPDATE alerts SET delivered = 1 WHERE id = ?1", params![id])?;
         Ok(())
     }
 

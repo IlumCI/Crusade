@@ -32,7 +32,12 @@ pub fn parse_masscan_json(s: &str) -> Vec<(IpAddr, u16)> {
 
     // Tolerant fallback: one JSON object per line, ignoring array punctuation.
     for line in s.lines() {
-        let line = line.trim().trim_start_matches(',').trim().trim_end_matches(',').trim();
+        let line = line
+            .trim()
+            .trim_start_matches(',')
+            .trim()
+            .trim_end_matches(',')
+            .trim();
         if !line.starts_with('{') || !line.ends_with('}') {
             continue;
         }
@@ -104,7 +109,10 @@ pub fn parse_zmap_csv(s: &str) -> Vec<(IpAddr, u16)> {
 /// Drop every pair whose address the blocklist forbids. Callers MUST apply this
 /// (or an equivalent check) to ingested sweep results before scanning them.
 pub fn filter_blocked(pairs: Vec<(IpAddr, u16)>, bl: &Blocklist) -> Vec<(IpAddr, u16)> {
-    pairs.into_iter().filter(|(ip, _)| !bl.is_blocked(*ip)).collect()
+    pairs
+        .into_iter()
+        .filter(|(ip, _)| !bl.is_blocked(*ip))
+        .collect()
 }
 
 #[cfg(test)]
@@ -125,7 +133,11 @@ mod tests {
         let got = parse_masscan_json(s);
         assert_eq!(
             got,
-            vec![(v4(8, 8, 8, 8), 443), (v4(1, 1, 1, 1), 80), (v4(1, 1, 1, 1), 443)]
+            vec![
+                (v4(8, 8, 8, 8), 443),
+                (v4(1, 1, 1, 1), 80),
+                (v4(1, 1, 1, 1), 443)
+            ]
         );
     }
 
@@ -185,10 +197,10 @@ mod tests {
         bl.add("8.8.8.8/32".parse().unwrap());
 
         let pairs = vec![
-            (v4(8, 8, 8, 8), 443),   // user-blocked
-            (v4(127, 0, 0, 1), 80),  // reserved loopback
-            (v4(192, 0, 2, 5), 80),  // reserved documentation
-            (v4(1, 1, 1, 1), 443),   // public, kept
+            (v4(8, 8, 8, 8), 443),  // user-blocked
+            (v4(127, 0, 0, 1), 80), // reserved loopback
+            (v4(192, 0, 2, 5), 80), // reserved documentation
+            (v4(1, 1, 1, 1), 443),  // public, kept
         ];
         let got = filter_blocked(pairs, &bl);
         assert_eq!(got, vec![(v4(1, 1, 1, 1), 443)]);

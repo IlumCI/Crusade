@@ -150,15 +150,18 @@ impl VulnDb {
     pub fn from_feeds(nvd_jsons: &[String], kev_json: Option<&str>) -> anyhow::Result<Self> {
         let mut cves = Vec::new();
         for (i, json) in nvd_jsons.iter().enumerate() {
-            let parsed = load_nvd(json)
-                .with_context(|| format!("parsing NVD feed #{i}"))?;
+            let parsed = load_nvd(json).with_context(|| format!("parsing NVD feed #{i}"))?;
             cves.extend(parsed);
         }
         let kev = match kev_json {
             Some(j) => load_kev(j).context("parsing CISA KEV catalog")?,
             None => KevCatalog::default(),
         };
-        Ok(VulnDb { cves, kev, exploits: HashMap::new() })
+        Ok(VulnDb {
+            cves,
+            kev,
+            exploits: HashMap::new(),
+        })
     }
 
     /// Mutable access to the exploit index, for [`VulnDb::load_exploits`].
@@ -213,7 +216,10 @@ impl VulnDb {
                     tags.push(Tag {
                         name: "known-exploited".to_string(),
                         cve: Some(cve.id.clone()),
-                        detail: Some("listed in the CISA Known Exploited Vulnerabilities catalog".to_string()),
+                        detail: Some(
+                            "listed in the CISA Known Exploited Vulnerabilities catalog"
+                                .to_string(),
+                        ),
                     });
                 }
             }
@@ -576,7 +582,8 @@ mod tests {
 
         let tags = db.match_service(Some("nginx"), Some("1.18.0"), None);
         assert!(
-            tags.iter().any(|t| t.name == "cve" && t.cve.as_deref() == Some("CVE-2021-23017")),
+            tags.iter()
+                .any(|t| t.name == "cve" && t.cve.as_deref() == Some("CVE-2021-23017")),
             "expected a cve tag, got {tags:?}"
         );
         assert!(
@@ -613,8 +620,12 @@ mod tests {
           ]
         }"#;
         let db = VulnDb::from_feeds(&[nvd.to_string()], None).unwrap();
-        assert!(!db.match_service(Some("nginx"), Some("1.18.0"), None).is_empty());
-        assert!(db.match_service(Some("nginx"), Some("1.19.0"), None).is_empty());
+        assert!(!db
+            .match_service(Some("nginx"), Some("1.18.0"), None)
+            .is_empty());
+        assert!(db
+            .match_service(Some("nginx"), Some("1.19.0"), None)
+            .is_empty());
         // No KEV feed => no known-exploited tag.
         assert!(db
             .match_service(Some("nginx"), Some("1.18.0"), None)
@@ -626,7 +637,11 @@ mod tests {
     fn product_match_is_case_insensitive_and_can_use_cpe() {
         let db = VulnDb::from_feeds(&[NVD.to_string()], None).unwrap();
         // Product/version recovered from the CPE string alone.
-        let tags = db.match_service(None, None, Some("cpe:2.3:a:nginx:NGINX:1.19.0:*:*:*:*:*:*:*"));
+        let tags = db.match_service(
+            None,
+            None,
+            Some("cpe:2.3:a:nginx:NGINX:1.19.0:*:*:*:*:*:*:*"),
+        );
         assert!(tags.iter().any(|t| t.name == "cve"), "got {tags:?}");
     }
 
@@ -672,14 +687,15 @@ mod tests {
 
         db.tag_host(&mut host);
 
-        let exploit = host
-            .tags
-            .iter()
-            .find(|t| t.name == "exploit-available");
+        let exploit = host.tags.iter().find(|t| t.name == "exploit-available");
         let exploit = exploit.expect("expected an exploit-available tag");
         assert_eq!(exploit.cve.as_deref(), Some("CVE-2021-23017"));
         assert!(
-            exploit.detail.as_deref().unwrap_or_default().contains("EDB-7777"),
+            exploit
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("EDB-7777"),
             "detail was {:?}",
             exploit.detail
         );

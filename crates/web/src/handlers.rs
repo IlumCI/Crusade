@@ -14,7 +14,8 @@ use crusade_core::query::parse;
 use serde::{Deserialize, Serialize};
 
 use crate::views::{
-    facet_max, HostRow, HostTemplate, IndexTemplate, NotFoundTemplate, StatsTemplate,
+    facet_max, AlertView, HistoryTemplate, HostRow, HostTemplate, IndexTemplate, NotFoundTemplate,
+    StatsTemplate, TrendsTemplate,
 };
 use crate::SharedStore;
 
@@ -39,11 +40,7 @@ fn render<T: Template>(tpl: T) -> Response {
         Ok(body) => Html(body).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "template render failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal template error",
-            )
-                .into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal template error").into_response()
         }
     }
 }
@@ -114,10 +111,7 @@ pub async fn index(
 }
 
 /// `GET /host/:ip` — host detail page.
-pub async fn host_detail(
-    State(store): State<SharedStore>,
-    Path(ip): Path<String>,
-) -> Response {
+pub async fn host_detail(State(store): State<SharedStore>, Path(ip): Path<String>) -> Response {
     let host = {
         let store = store.lock().await;
         store.get_host(&ip).unwrap_or(None)
@@ -134,6 +128,41 @@ pub async fn host_detail(
             }
         }
     }
+}
+
+/// `GET /host/:ip/history` — reverse-chronological scan-history timeline.
+pub async fn host_history(State(store): State<SharedStore>, Path(ip): Path<String>) -> Response {
+    let rows = {
+        let store = store.lock().await;
+        store.service_history(&ip).unwrap_or_default()
+    };
+    render(HistoryTemplate::from_history(ip, rows))
+}
+
+/// `GET /trends` — recent alerts plus a cheap activity summary (total hosts and
+/// the global facet tables).
+pub async fn trends(State(store): State<SharedStore>) -> Response {
+    let (host_count, alerts, facets) = {
+        let store = store.lock().await;
+        let host_count = store.host_count().unwrap_or(0);
+        let alerts = store.recent_alerts(50).unwrap_or_default();
+        let facets = store.facets(20).unwrap_or_default();
+        (host_count, alerts, facets)
+    };
+
+    let tpl = TrendsTemplate {
+        host_count,
+        alerts: alerts.iter().map(AlertView::from).collect(),
+        ports_max: facet_max(&facets.ports),
+        products_max: facet_max(&facets.products),
+        countries_max: facet_max(&facets.countries),
+        tags_max: facet_max(&facets.tags),
+        ports: facets.ports,
+        products: facets.products,
+        countries: facets.countries,
+        tags: facets.tags,
+    };
+    render(tpl)
 }
 
 /// `GET /stats` — facets + map page. With `?q=`, the facets are scoped to the
@@ -219,10 +248,7 @@ pub async fn api_search(
 }
 
 /// `GET /api/host/:ip`
-pub async fn api_host(
-    State(store): State<SharedStore>,
-    Path(ip): Path<String>,
-) -> Response {
+pub async fn api_host(State(store): State<SharedStore>, Path(ip): Path<String>) -> Response {
     let host = {
         let store = store.lock().await;
         store.get_host(&ip).unwrap_or(None)

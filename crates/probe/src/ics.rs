@@ -286,7 +286,14 @@ fn modbus_expected(buf: &[u8]) -> Option<usize> {
 }
 
 async fn probe_modbus(ip: IpAddr, port: u16, timeout: Duration) -> Option<Service> {
-    let resp = tcp_exchange(ip, port, &build_modbus_devid_request(), timeout, modbus_expected).await?;
+    let resp = tcp_exchange(
+        ip,
+        port,
+        &build_modbus_devid_request(),
+        timeout,
+        modbus_expected,
+    )
+    .await?;
     let info = parse_modbus_devid(&resp)?;
     Some(ics_service(port, Transport::Tcp, info, "modbus"))
 }
@@ -396,7 +403,11 @@ pub fn parse_s7_szl(resp: &[u8]) -> Option<S7Szl> {
     let rosctr = *s7.get(1)?;
     let param_len = u16::from_be_bytes([*s7.get(6)?, *s7.get(7)?]) as usize;
     // Ack / Ack_Data headers carry two extra error bytes; Job/UserData do not.
-    let header_len = if rosctr == 0x02 || rosctr == 0x03 { 12 } else { 10 };
+    let header_len = if rosctr == 0x02 || rosctr == 0x03 {
+        12
+    } else {
+        10
+    };
     let data = s7.get(header_len + param_len..)?;
     // Data block: return code, transport size, length, SZL id, index,
     // record length, record count.
@@ -411,7 +422,11 @@ pub fn parse_s7_szl(resp: &[u8]) -> Option<S7Szl> {
     let rec_len = u16::from_be_bytes([data[8], data[9]]) as usize;
     let rec_count = u16::from_be_bytes([data[10], data[11]]) as usize;
     if rec_len == 0 {
-        return Some(S7Szl { szl_id, szl_index, records: Vec::new() });
+        return Some(S7Szl {
+            szl_id,
+            szl_index,
+            records: Vec::new(),
+        });
     }
     let mut records = Vec::new();
     let mut off = 12;
@@ -422,7 +437,11 @@ pub fn parse_s7_szl(resp: &[u8]) -> Option<S7Szl> {
         }
         off += rec_len;
     }
-    Some(S7Szl { szl_id, szl_index, records })
+    Some(S7Szl {
+        szl_id,
+        szl_index,
+        records,
+    })
 }
 
 /// Fold a decoded SZL list into an [`IcsInfo`] (Siemens module / component id).
@@ -520,7 +539,8 @@ async fn probe_s7(ip: IpAddr, port: u16, timeout: Duration) -> Option<Service> {
     // Negotiate the PDU size (read-only handshake), then read the SZL lists.
     let _ = tpkt_exchange(&mut stream, timeout, &build_s7_setup_comm()).await;
     for (szl_id, idx) in [(0x0011u16, 0x0001u16), (0x001c, 0x0001)] {
-        if let Some(resp) = tpkt_exchange(&mut stream, timeout, &build_s7_szl_request(szl_id, idx)).await
+        if let Some(resp) =
+            tpkt_exchange(&mut stream, timeout, &build_s7_szl_request(szl_id, idx)).await
         {
             if let Some(szl) = parse_s7_szl(&resp) {
                 apply_s7_szl(&mut info, &szl);
@@ -606,7 +626,8 @@ fn parse_enip_identity_item(item: &[u8]) -> Option<IcsInfo> {
     info.version = Some(format!("{rev_major}.{rev_minor:02}"));
     info.device_id = Some(format!("{serial:08X}"));
     info.extra.push(("vendor_id".into(), vendor_id.to_string()));
-    info.extra.push(("device_type".into(), device_type.to_string()));
+    info.extra
+        .push(("device_type".into(), device_type.to_string()));
     info.extra
         .push(("product_code".into(), product_code.to_string()));
     Some(info)
@@ -633,7 +654,14 @@ fn enip_expected(buf: &[u8]) -> Option<usize> {
 }
 
 async fn probe_enip(ip: IpAddr, port: u16, timeout: Duration) -> Option<Service> {
-    if let Some(resp) = tcp_exchange(ip, port, &build_enip_list_identity(), timeout, enip_expected).await
+    if let Some(resp) = tcp_exchange(
+        ip,
+        port,
+        &build_enip_list_identity(),
+        timeout,
+        enip_expected,
+    )
+    .await
     {
         if let Some(info) = parse_enip_identity(&resp) {
             return Some(ics_service(port, Transport::Tcp, info, "ethernetip"));
@@ -943,7 +971,14 @@ fn dnp3_expected(buf: &[u8]) -> Option<usize> {
 }
 
 async fn probe_dnp3(ip: IpAddr, port: u16, timeout: Duration) -> Option<Service> {
-    let resp = tcp_exchange(ip, port, &build_dnp3_link_status(1, 1024), timeout, dnp3_expected).await?;
+    let resp = tcp_exchange(
+        ip,
+        port,
+        &build_dnp3_link_status(1, 1024),
+        timeout,
+        dnp3_expected,
+    )
+    .await?;
     let info = parse_dnp3(&resp)?;
     Some(ics_service(port, Transport::Tcp, info, "dnp3"))
 }
@@ -956,11 +991,19 @@ mod tests {
 
     fn modbus_devid_response() -> Vec<u8> {
         // PDU after MBAP: FC, MEI, readdevid code, conformity, more, next, count.
-        let mut pdu = vec![MODBUS_FC_MEI, MODBUS_MEI_DEVID, 0x01, 0x83, 0x00, 0x00, 0x03];
+        let mut pdu = vec![
+            MODBUS_FC_MEI,
+            MODBUS_MEI_DEVID,
+            0x01,
+            0x83,
+            0x00,
+            0x00,
+            0x03,
+        ];
         let objects: [(u8, &[u8]); 3] = [
-            (0x00, b"Acme"),     // VendorName
-            (0x01, b"PLC-X"),    // ProductCode
-            (0x02, b"1.2"),      // MajorMinorRevision
+            (0x00, b"Acme"),  // VendorName
+            (0x01, b"PLC-X"), // ProductCode
+            (0x02, b"1.2"),   // MajorMinorRevision
         ];
         for (id, val) in objects {
             pdu.push(id);
@@ -1061,7 +1104,10 @@ mod tests {
     fn enip_parses_identity() {
         let info = parse_enip_identity(&enip_identity_response()).expect("enip");
         assert_eq!(info.protocol, "ethernetip");
-        assert_eq!(info.vendor.as_deref(), Some("Rockwell Automation/Allen-Bradley"));
+        assert_eq!(
+            info.vendor.as_deref(),
+            Some("Rockwell Automation/Allen-Bradley")
+        );
         assert_eq!(info.product.as_deref(), Some("1756-L61/B"));
         assert_eq!(info.version.as_deref(), Some("1.05"));
         assert_eq!(info.device_id.as_deref(), Some("12345678"));
@@ -1134,7 +1180,7 @@ mod tests {
     fn s7_szl_request_framing() {
         let req = build_s7_szl_request(0x0011, 0x0001);
         assert_eq!(&req[0..2], &[0x03, 0x00]); // TPKT
-        // COTP DT header inside.
+                                               // COTP DT header inside.
         assert_eq!(&req[4..7], &[0x02, 0xf0, 0x80]);
         assert_eq!(req[7], 0x32); // S7 protocol id
         assert_eq!(req[8], 0x07); // ROSCTR = UserData
@@ -1171,7 +1217,7 @@ mod tests {
     fn bacnet_readprop_ack_object_name() -> Vec<u8> {
         let name = b"Device-5";
         let mut apdu = vec![0x30, 0x01, 0x0c]; // complex ack, invoke 1, ReadProperty
-        // object identifier (context tag 0): device object, instance 5.
+                                               // object identifier (context tag 0): device object, instance 5.
         apdu.push(0x0c);
         apdu.extend_from_slice(&((8u32 << 22) | 5).to_be_bytes());
         // property identifier (context tag 1): object-name (77).

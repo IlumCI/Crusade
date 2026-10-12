@@ -62,11 +62,7 @@ async fn post_webhook(url: &str, a: &Alert, text: &str) -> Result<()> {
         "detail": a.detail,
         "ts": a.ts,
     });
-    let resp = reqwest::Client::new()
-        .post(url)
-        .json(&body)
-        .send()
-        .await?;
+    let resp = reqwest::Client::new().post(url).json(&body).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("webhook {} returned {}", url, resp.status());
     }

@@ -8,7 +8,7 @@
 use crate::config::Config;
 use anyhow::Result;
 use crusade_core::model::Host;
-use crusade_enrich::{enrich_host, EnrichConfig, GeoAsnDb};
+use crusade_enrich::{enrich_host, EnrichConfig, GeoAsnDb, Screenshotter};
 use crusade_probe::{Fingerprints, ProbeConfig};
 use crusade_store::Store;
 use crusade_vuln::VulnDb;
@@ -29,11 +29,10 @@ impl Datasets {
     /// Load fingerprints (required), plus geo/ASN and CVE feeds (best-effort:
     /// missing feeds degrade gracefully rather than failing the scan).
     pub fn load(cfg: &Config) -> Result<Datasets> {
-        let fingerprints = Fingerprints::load(&cfg.data.nmap_probes)
-            .unwrap_or_else(|e| {
-                warn!("could not load nmap probes ({e}); fingerprinting disabled");
-                Fingerprints::parse("")
-            });
+        let fingerprints = Fingerprints::load(&cfg.data.nmap_probes).unwrap_or_else(|e| {
+            warn!("could not load nmap probes ({e}); fingerprinting disabled");
+            Fingerprints::parse("")
+        });
 
         let dir = &cfg.data.dir;
         let geo = load_geo(dir).unwrap_or_else(|e| {
@@ -45,7 +44,11 @@ impl Datasets {
             VulnDb::new()
         });
 
-        Ok(Datasets { fingerprints, geo, vulns })
+        Ok(Datasets {
+            fingerprints,
+            geo,
+            vulns,
+        })
     }
 }
 
@@ -101,7 +104,20 @@ pub async fn process(
     datasets: Arc<Datasets>,
     cfg: &Config,
     store: &mut Store,
+    screenshot: bool,
 ) -> Result<Vec<Host>> {
+    // Build the screenshotter once (if enabled). Capture is best-effort and
+    // returns None when no Chrome binary is available.
+    let shots: Option<crusade_enrich::ChromeScreenshotter> = if screenshot {
+        let mut s = crusade_enrich::ChromeScreenshotter::new();
+        if let Some(path) = &cfg.screenshot.chrome_path {
+            s = s.with_chrome_path(path.clone());
+        }
+        Some(s)
+    } else {
+        None
+    };
+    let screens_dir = cfg.data.dir.join("screens");
     // Group both worklists by host: (tcp ports, udp ports).
     let mut by_host: BTreeMap<IpAddr, (Vec<u16>, Vec<u16>)> = BTreeMap::new();
     for (ip, port) in tcp_ports {
@@ -116,7 +132,10 @@ pub async fn process(
         tls: true,
         sni: None,
     };
-    let enrich_cfg = EnrichConfig { geo: true, reverse_dns: true };
+    let enrich_cfg = EnrichConfig {
+        geo: true,
+        reverse_dns: true,
+    };
     let timeout = cfg.connect_timeout();
 
     let mut hosts = Vec::new();
@@ -139,16 +158,24 @@ pub async fn process(
         // Probe UDP ports concurrently (protocol probes; may yield nothing).
         let mut udp_tasks = Vec::new();
         for port in udp {
-            udp_tasks.push(async move { crusade_probe::probe_udp_service(ip, port, timeout).await });
+            udp_tasks
+                .push(async move { crusade_probe::probe_udp_service(ip, port, timeout).await });
         }
 
-        let (tcp_res, udp_res) =
-            futures::join!(futures::future::join_all(tcp_tasks), futures::future::join_all(udp_tasks));
+        let (tcp_res, udp_res) = futures::join!(
+            futures::future::join_all(tcp_tasks),
+            futures::future::join_all(udp_tasks)
+        );
         host.services = tcp_res.into_iter().chain(udp_res).flatten().collect();
 
         // Enrich (geo/ASN + reverse DNS), then tag.
         enrich_host(&mut host, &datasets.geo, &enrich_cfg).await;
         datasets.vulns.tag_host(&mut host);
+
+        // Screenshots of web services (best-effort), saved under data/screens.
+        if let Some(shotter) = &shots {
+            capture_screenshots(&mut host, shotter, &screens_dir).await;
+        }
 
         info!(ip = %ip, services = host.services.len(), tags = host.tags.len(), "host processed");
         store.upsert_host(&host)?;
@@ -156,4 +183,42 @@ pub async fn process(
     }
 
     Ok(hosts)
+}
+
+/// Capture a screenshot of each web-ish service on the host and record the
+/// saved filename on the service. Best-effort: failures are ignored.
+async fn capture_screenshots(
+    host: &mut Host,
+    shotter: &crusade_enrich::ChromeScreenshotter,
+    screens_dir: &Path,
+) {
+    use crusade_core::Transport;
+    let ip = host.ip;
+    for svc in &mut host.services {
+        if svc.transport != Transport::Tcp {
+            continue;
+        }
+        // Treat a service as web if it has HTTP info or sits on a common web port.
+        let is_tls = svc.tls.is_some() || matches!(svc.port, 443 | 8443 | 9443);
+        let is_web =
+            svc.http.is_some() || matches!(svc.port, 80 | 443 | 8080 | 8443 | 8000 | 8888 | 9443);
+        if !is_web {
+            continue;
+        }
+        let scheme = if is_tls { "https" } else { "http" };
+        let url = format!("{scheme}://{ip}:{}/", svc.port);
+        if let Ok(Some(png)) = shotter.capture(&url).await {
+            if std::fs::create_dir_all(screens_dir).is_err() {
+                continue;
+            }
+            let file = format!(
+                "{}_{}.png",
+                ip.to_string().replace([':', '.'], "-"),
+                svc.port
+            );
+            if std::fs::write(screens_dir.join(&file), &png).is_ok() {
+                svc.screenshot = Some(file);
+            }
+        }
+    }
 }

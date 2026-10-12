@@ -24,7 +24,11 @@ pub struct RateLimiterParams {
 impl Default for RateLimiterParams {
     fn default() -> Self {
         // Conservative: 100 conn/s sustained, small burst, 50 concurrent.
-        RateLimiterParams { conn_per_sec: 100.0, burst: 100.0, concurrency: 50 }
+        RateLimiterParams {
+            conn_per_sec: 100.0,
+            burst: 100.0,
+            concurrency: 50,
+        }
     }
 }
 
@@ -42,7 +46,11 @@ impl TokenBucket {
     fn new(rate: f64, capacity: f64) -> Self {
         let rate = rate.max(f64::MIN_POSITIVE);
         let capacity = capacity.max(1.0);
-        TokenBucket { tokens: capacity, capacity, rate }
+        TokenBucket {
+            tokens: capacity,
+            capacity,
+            rate,
+        }
     }
 
     /// Credit tokens for `elapsed`, saturating at capacity.
@@ -170,11 +178,17 @@ mod tests {
         }
         // Empty bucket at 10 tokens/s -> ~100ms for one token.
         let w = b.wait_for_token();
-        assert!(w >= Duration::from_millis(99) && w <= Duration::from_millis(101), "{w:?}");
+        assert!(
+            w >= Duration::from_millis(99) && w <= Duration::from_millis(101),
+            "{w:?}"
+        );
 
         b.refill(Duration::from_millis(50)); // 0.5 token
         let w = b.wait_for_token();
-        assert!(w >= Duration::from_millis(49) && w <= Duration::from_millis(51), "{w:?}");
+        assert!(
+            w >= Duration::from_millis(49) && w <= Duration::from_millis(51),
+            "{w:?}"
+        );
     }
 
     #[test]

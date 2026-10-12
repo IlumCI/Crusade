@@ -16,7 +16,15 @@ fn host_with(ip: &str, port: u16, product: &str) -> Host {
     s.version = Some("1.0".into());
     s.service = Some("http".into());
     s.banner = Some(format!("Welcome to {product} default page"));
-    s.http = Some(HttpInfo { status: Some(200), server: Some(product.into()), title: Some("Index".into()), headers: vec![], favicon_hash: None, technologies: vec![], security_headers: vec![] });
+    s.http = Some(HttpInfo {
+        status: Some(200),
+        server: Some(product.into()),
+        title: Some("Index".into()),
+        headers: vec![],
+        favicon_hash: None,
+        technologies: vec![],
+        security_headers: vec![],
+    });
     s.observed_at = h.last_seen;
     h.services.push(s);
     h.tags.push(Tag::simple("default-page"));
@@ -42,15 +50,26 @@ fn upsert_is_idempotent_on_current_state() {
     store.upsert_host(&h).unwrap();
     assert_eq!(store.host_count().unwrap(), 1);
     // but history accumulates
-    let n: i64 = store.conn.query_row("SELECT COUNT(*) FROM service_history WHERE ip='192.0.2.2'", [], |r| r.get(0)).unwrap();
+    let n: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM service_history WHERE ip='192.0.2.2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(n, 2);
 }
 
 #[test]
 fn search_by_port_and_product() {
     let mut store = Store::open_in_memory().unwrap();
-    store.upsert_host(&host_with("192.0.2.10", 22, "OpenSSH")).unwrap();
-    store.upsert_host(&host_with("192.0.2.11", 80, "nginx")).unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.10", 22, "OpenSSH"))
+        .unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.11", 80, "nginx"))
+        .unwrap();
     let r = store.search(&parse("port:80").unwrap(), 10, 0).unwrap();
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].ip.to_string(), "192.0.2.11");
@@ -62,19 +81,31 @@ fn search_by_port_and_product() {
 #[test]
 fn search_free_text_via_fts() {
     let mut store = Store::open_in_memory().unwrap();
-    store.upsert_host(&host_with("192.0.2.20", 80, "nginx")).unwrap();
-    let r = store.search(&parse("\"default page\"").unwrap(), 10, 0).unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.20", 80, "nginx"))
+        .unwrap();
+    let r = store
+        .search(&parse("\"default page\"").unwrap(), 10, 0)
+        .unwrap();
     assert_eq!(r.len(), 1);
-    let r = store.search(&parse("nonexistentword").unwrap(), 10, 0).unwrap();
+    let r = store
+        .search(&parse("nonexistentword").unwrap(), 10, 0)
+        .unwrap();
     assert_eq!(r.len(), 0);
 }
 
 #[test]
 fn negation_excludes() {
     let mut store = Store::open_in_memory().unwrap();
-    store.upsert_host(&host_with("192.0.2.30", 80, "nginx")).unwrap();
-    store.upsert_host(&host_with("192.0.2.31", 80, "apache")).unwrap();
-    let r = store.search(&parse("-product:nginx").unwrap(), 10, 0).unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.30", 80, "nginx"))
+        .unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.31", 80, "apache"))
+        .unwrap();
+    let r = store
+        .search(&parse("-product:nginx").unwrap(), 10, 0)
+        .unwrap();
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].ip.to_string(), "192.0.2.31");
 }
@@ -82,9 +113,15 @@ fn negation_excludes() {
 #[test]
 fn facets_count_distinct_hosts() {
     let mut store = Store::open_in_memory().unwrap();
-    store.upsert_host(&host_with("192.0.2.40", 80, "nginx")).unwrap();
-    store.upsert_host(&host_with("192.0.2.41", 80, "nginx")).unwrap();
-    store.upsert_host(&host_with("192.0.2.42", 22, "OpenSSH")).unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.40", 80, "nginx"))
+        .unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.41", 80, "nginx"))
+        .unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.42", 22, "OpenSSH"))
+        .unwrap();
     let f = store.facets(10).unwrap();
     let port80 = f.ports.iter().find(|x| x.value == "80").unwrap();
     assert_eq!(port80.count, 2);
@@ -98,11 +135,19 @@ fn tls_cn_is_searchable() {
     let mut h = host_with("192.0.2.50", 443, "nginx");
     h.services[0].tls = Some(TlsCert {
         subject_cn: Some("secure.example.com".into()),
-        issuer_cn: None, san: vec![], not_before: None, not_after: None,
-        self_signed: true, fingerprint_sha256: None, version: None, cipher: None,
+        issuer_cn: None,
+        san: vec![],
+        not_before: None,
+        not_after: None,
+        self_signed: true,
+        fingerprint_sha256: None,
+        version: None,
+        cipher: None,
     });
     store.upsert_host(&h).unwrap();
-    let r = store.search(&parse("ssl.cn:secure.example.com").unwrap(), 10, 0).unwrap();
+    let r = store
+        .search(&parse("ssl.cn:secure.example.com").unwrap(), 10, 0)
+        .unwrap();
     assert_eq!(r.len(), 1);
 }
 
@@ -125,12 +170,33 @@ fn ics_service_is_stored_and_searchable() {
     // ics: protocol filter
     let r = store.search(&parse("ics:modbus").unwrap(), 10, 0).unwrap();
     assert_eq!(r.len(), 1);
-    assert_eq!(r[0].services[0].ics.as_ref().unwrap().vendor.as_deref(), Some("Schneider Electric"));
+    assert_eq!(
+        r[0].services[0].ics.as_ref().unwrap().vendor.as_deref(),
+        Some("Schneider Electric")
+    );
     // has_ics boolean
-    assert_eq!(store.search(&parse("has_ics:true").unwrap(), 10, 0).unwrap().len(), 1);
-    assert_eq!(store.search(&parse("has_ics:false").unwrap(), 10, 0).unwrap().len(), 0);
+    assert_eq!(
+        store
+            .search(&parse("has_ics:true").unwrap(), 10, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .search(&parse("has_ics:false").unwrap(), 10, 0)
+            .unwrap()
+            .len(),
+        0
+    );
     // vendor is full-text searchable
-    assert_eq!(store.search(&parse("Schneider").unwrap(), 10, 0).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .search(&parse("Schneider").unwrap(), 10, 0)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -144,14 +210,69 @@ fn auth_state_and_exploit_tag_searchable() {
     s.auth = Some(AuthState::Open);
     s.observed_at = h.last_seen;
     h.services.push(s);
-    h.tags.push(Tag { name: "exploit-available".into(), cve: Some("CVE-2022-0543".into()), detail: Some("EDB-50124".into()) });
+    h.tags.push(Tag {
+        name: "exploit-available".into(),
+        cve: Some("CVE-2022-0543".into()),
+        detail: Some("EDB-50124".into()),
+    });
     store.upsert_host(&h).unwrap();
 
-    assert_eq!(store.search(&parse("auth:open").unwrap(), 10, 0).unwrap().len(), 1);
-    assert_eq!(store.search(&parse("auth:required").unwrap(), 10, 0).unwrap().len(), 0);
-    assert_eq!(store.search(&parse("has_exploit:true").unwrap(), 10, 0).unwrap().len(), 1);
-    assert_eq!(store.search(&parse("-has_exploit:true").unwrap(), 10, 0).unwrap().len(), 0);
+    assert_eq!(
+        store
+            .search(&parse("auth:open").unwrap(), 10, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .search(&parse("auth:required").unwrap(), 10, 0)
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        store
+            .search(&parse("has_exploit:true").unwrap(), 10, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .search(&parse("-has_exploit:true").unwrap(), 10, 0)
+            .unwrap()
+            .len(),
+        0
+    );
     // round-trip preserves auth
     let got = store.get_host("192.0.2.88").unwrap().unwrap();
     assert_eq!(got.services[0].auth, Some(AuthState::Open));
+}
+
+#[test]
+fn job_queue_enqueue_claim_finish() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .enqueue_job("192.0.2.0/30", Some("80,443"), false, true)
+        .unwrap();
+    store
+        .enqueue_job("198.51.100.5", None, true, false)
+        .unwrap();
+    assert_eq!(store.job_counts().unwrap(), (2, 0, 0, 0));
+
+    let j1 = store.claim_next_job("w1").unwrap().unwrap();
+    assert_eq!(j1.target, "192.0.2.0/30");
+    assert_eq!(j1.ports.as_deref(), Some("80,443"));
+    assert!(j1.ics && !j1.udp);
+    assert_eq!(j1.status, "running");
+    assert_eq!(store.job_counts().unwrap(), (1, 1, 0, 0)); // one claimed
+
+    let j2 = store.claim_next_job("w2").unwrap().unwrap();
+    assert_eq!(j2.target, "198.51.100.5");
+    assert!(store.claim_next_job("w3").unwrap().is_none()); // queue drained
+
+    store.finish_job(j1.id, true, "2 hosts").unwrap();
+    store.finish_job(j2.id, false, "timeout").unwrap();
+    assert_eq!(store.job_counts().unwrap(), (0, 0, 1, 1));
 }

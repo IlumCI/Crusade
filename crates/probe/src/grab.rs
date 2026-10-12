@@ -57,7 +57,7 @@ async fn read_capped(stream: &mut TcpStream, timeout: Duration) -> Option<Vec<u8
             break;
         }
         match tokio::time::timeout(remaining, stream.read(&mut chunk)).await {
-            Ok(Ok(0)) => break,        // clean EOF
+            Ok(Ok(0)) => break, // clean EOF
             Ok(Ok(n)) => {
                 buf.extend_from_slice(&chunk[..n]);
                 if buf.len() >= MAX_BANNER {

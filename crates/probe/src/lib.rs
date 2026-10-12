@@ -81,12 +81,7 @@ fn is_tls_port(port: u16) -> bool {
 ///
 /// The returned `Service` always has `observed_at` set to now and `transport`
 /// = TCP. Any field we could not determine is simply left as `None`.
-pub async fn probe_service(
-    ip: IpAddr,
-    port: u16,
-    fp: &Fingerprints,
-    cfg: &ProbeConfig,
-) -> Service {
+pub async fn probe_service(ip: IpAddr, port: u16, fp: &Fingerprints, cfg: &ProbeConfig) -> Service {
     let mut svc = Service::new(port, Transport::Tcp);
 
     // 1. Banner / HTTP response over plaintext.
@@ -195,12 +190,7 @@ pub async fn probe_service(
 /// query is `Open`; otherwise, for the services with a read-only posture probe
 /// (Redis, MongoDB, Elasticsearch, Memcached, VNC) we run that probe. Any other
 /// service is left unassessed (`None`).
-async fn assess_auth(
-    ip: IpAddr,
-    port: u16,
-    svc: &Service,
-    timeout: Duration,
-) -> Option<AuthState> {
+async fn assess_auth(ip: IpAddr, port: u16, svc: &Service, timeout: Duration) -> Option<AuthState> {
     if let Some(http) = &svc.http {
         return Some(auth::classify_http_auth(http));
     }

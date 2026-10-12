@@ -158,7 +158,11 @@ pub enum ParseError {
     #[error("invalid boolean for `{field}`: {value:?} (use true/false)")]
     BadBool { field: &'static str, value: String },
     #[error("invalid value for `{field}`: {value:?} (allowed: {allowed})")]
-    BadEnum { field: &'static str, value: String, allowed: &'static str },
+    BadEnum {
+        field: &'static str,
+        value: String,
+        allowed: &'static str,
+    },
 }
 
 impl fmt::Display for Query {
@@ -223,7 +227,11 @@ pub fn parse(input: &str) -> Result<Query, ParseError> {
             if let Some((key, val)) = body.split_once(':') {
                 if let Some(field) = Field::parse(key) {
                     let value = parse_value(field, val)?;
-                    query.filters.push(Filter { field, value, negate });
+                    query.filters.push(Filter {
+                        field,
+                        value,
+                        negate,
+                    });
                     continue;
                 }
             }
@@ -244,21 +252,41 @@ fn parse_value(field: Field, raw: &str) -> Result<FilterValue, ParseError> {
             .trim_start_matches("as")
             .parse::<i64>()
             .map(FilterValue::Int)
-            .map_err(|_| ParseError::BadNumber { field: field.as_str(), value: raw.to_string() }),
-        Field::Favicon => raw
-            .parse::<i64>()
-            .map(FilterValue::Int)
-            .map_err(|_| ParseError::BadNumber { field: field.as_str(), value: raw.to_string() }),
-        Field::HasScreenshot | Field::HasVuln | Field::HasIcs | Field::HasExploit => match raw.to_ascii_lowercase().as_str() {
-            "true" | "1" | "yes" => Ok(FilterValue::Bool(true)),
-            "false" | "0" | "no" => Ok(FilterValue::Bool(false)),
-            _ => Err(ParseError::BadBool { field: field.as_str(), value: raw.to_string() }),
-        },
+            .map_err(|_| ParseError::BadNumber {
+                field: field.as_str(),
+                value: raw.to_string(),
+            }),
+        Field::Favicon => {
+            raw.parse::<i64>()
+                .map(FilterValue::Int)
+                .map_err(|_| ParseError::BadNumber {
+                    field: field.as_str(),
+                    value: raw.to_string(),
+                })
+        }
+        Field::HasScreenshot | Field::HasVuln | Field::HasIcs | Field::HasExploit => {
+            match raw.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => Ok(FilterValue::Bool(true)),
+                "false" | "0" | "no" => Ok(FilterValue::Bool(false)),
+                _ => Err(ParseError::BadBool {
+                    field: field.as_str(),
+                    value: raw.to_string(),
+                }),
+            }
+        }
         Field::Auth => match raw.to_ascii_lowercase().as_str() {
-            "open" | "none" | "unauth" | "unauthenticated" | "no" => Ok(FilterValue::Text("open".into())),
-            "required" | "auth" | "authenticated" | "yes" => Ok(FilterValue::Text("required".into())),
+            "open" | "none" | "unauth" | "unauthenticated" | "no" => {
+                Ok(FilterValue::Text("open".into()))
+            }
+            "required" | "auth" | "authenticated" | "yes" => {
+                Ok(FilterValue::Text("required".into()))
+            }
             "unknown" => Ok(FilterValue::Text("unknown".into())),
-            _ => Err(ParseError::BadEnum { field: field.as_str(), value: raw.to_string(), allowed: "open, required, unknown" }),
+            _ => Err(ParseError::BadEnum {
+                field: field.as_str(),
+                value: raw.to_string(),
+                allowed: "open, required, unknown",
+            }),
         },
         Field::Transport => match raw.to_ascii_lowercase().as_str() {
             "tcp" => Ok(FilterValue::Text("tcp".into())),
@@ -277,7 +305,10 @@ fn parse_value(field: Field, raw: &str) -> Result<FilterValue, ParseError> {
 
 /// Parse `YYYY-MM-DD` into a unix timestamp at UTC midnight.
 fn parse_date(field: Field, raw: &str) -> Result<i64, ParseError> {
-    let bad = || ParseError::BadDate { field: field.as_str(), value: raw.to_string() };
+    let bad = || ParseError::BadDate {
+        field: field.as_str(),
+        value: raw.to_string(),
+    };
     let mut parts = raw.split('-');
     let y: i32 = parts.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
     let m: u8 = parts.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
@@ -328,7 +359,10 @@ fn tokenize(input: &str) -> Vec<Token> {
             }
             c if c.is_whitespace() && !in_quotes => {
                 if active {
-                    out.push(Token { text: std::mem::take(&mut cur), was_quoted: leading_quote });
+                    out.push(Token {
+                        text: std::mem::take(&mut cur),
+                        was_quoted: leading_quote,
+                    });
                     leading_quote = false;
                     active = false;
                 }
@@ -340,7 +374,10 @@ fn tokenize(input: &str) -> Vec<Token> {
         }
     }
     if active {
-        out.push(Token { text: cur, was_quoted: leading_quote });
+        out.push(Token {
+            text: cur,
+            was_quoted: leading_quote,
+        });
     }
     out
 }
@@ -350,7 +387,10 @@ mod tests {
     use super::*;
 
     fn f(q: &Query, field: Field) -> &Filter {
-        q.filters.iter().find(|x| x.field == field).expect("filter present")
+        q.filters
+            .iter()
+            .find(|x| x.field == field)
+            .expect("filter present")
     }
 
     #[test]
@@ -389,7 +429,10 @@ mod tests {
     fn quoted_filter_value_with_space() {
         // org:"Deutsche Telekom" — the quote is inside the token.
         let q = parse("org:\"Deutsche Telekom\"").unwrap();
-        assert_eq!(f(&q, Field::Org).value, FilterValue::Text("Deutsche Telekom".into()));
+        assert_eq!(
+            f(&q, Field::Org).value,
+            FilterValue::Text("Deutsche Telekom".into())
+        );
     }
 
     #[test]
@@ -402,7 +445,8 @@ mod tests {
 
     #[test]
     fn mixed_query() {
-        let q = parse("port:443 country:DE product:nginx \"default page\" after:2026-01-01").unwrap();
+        let q =
+            parse("port:443 country:DE product:nginx \"default page\" after:2026-01-01").unwrap();
         assert_eq!(q.filters.len(), 4);
         assert_eq!(q.text, vec!["default page".to_string()]);
         // after:2026-01-01 == 2026-01-01T00:00:00Z
@@ -422,12 +466,18 @@ mod tests {
 
     #[test]
     fn bad_port_errors() {
-        assert!(matches!(parse("port:notaport"), Err(ParseError::BadNumber { .. })));
+        assert!(matches!(
+            parse("port:notaport"),
+            Err(ParseError::BadNumber { .. })
+        ));
     }
 
     #[test]
     fn bad_date_errors() {
-        assert!(matches!(parse("after:2026-13-40"), Err(ParseError::BadDate { .. })));
+        assert!(matches!(
+            parse("after:2026-13-40"),
+            Err(ParseError::BadDate { .. })
+        ));
     }
 
     #[test]
@@ -439,7 +489,10 @@ mod tests {
     #[test]
     fn v2_net_filter() {
         let q = parse("net:10.0.0.0/8").unwrap();
-        assert_eq!(f(&q, Field::Net).value, FilterValue::Text("10.0.0.0/8".into()));
+        assert_eq!(
+            f(&q, Field::Net).value,
+            FilterValue::Text("10.0.0.0/8".into())
+        );
     }
 
     #[test]
@@ -454,17 +507,33 @@ mod tests {
     #[test]
     fn v2_transport_enum() {
         let q = parse("transport:udp").unwrap();
-        assert_eq!(f(&q, Field::Transport).value, FilterValue::Text("udp".into()));
-        assert!(matches!(parse("transport:sctp"), Err(ParseError::BadEnum { .. })));
+        assert_eq!(
+            f(&q, Field::Transport).value,
+            FilterValue::Text("udp".into())
+        );
+        assert!(matches!(
+            parse("transport:sctp"),
+            Err(ParseError::BadEnum { .. })
+        ));
     }
 
     #[test]
     fn v2_vuln_and_jarm_and_hassh() {
-        let q = parse("vuln:CVE-2021-1234 jarm:abcd hassh:deadbeef ssh.hostkey:SHA256:xyz").unwrap();
-        assert_eq!(f(&q, Field::Vuln).value, FilterValue::Text("CVE-2021-1234".into()));
+        let q =
+            parse("vuln:CVE-2021-1234 jarm:abcd hassh:deadbeef ssh.hostkey:SHA256:xyz").unwrap();
+        assert_eq!(
+            f(&q, Field::Vuln).value,
+            FilterValue::Text("CVE-2021-1234".into())
+        );
         assert_eq!(f(&q, Field::Jarm).value, FilterValue::Text("abcd".into()));
-        assert_eq!(f(&q, Field::Hassh).value, FilterValue::Text("deadbeef".into()));
-        assert_eq!(f(&q, Field::SshHostkey).value, FilterValue::Text("SHA256:xyz".into()));
+        assert_eq!(
+            f(&q, Field::Hassh).value,
+            FilterValue::Text("deadbeef".into())
+        );
+        assert_eq!(
+            f(&q, Field::SshHostkey).value,
+            FilterValue::Text("SHA256:xyz".into())
+        );
     }
 
     #[test]
@@ -474,8 +543,14 @@ mod tests {
             assert_eq!(f(&q, Field::Auth).value, FilterValue::Text("open".into()));
         }
         let q = parse("auth:required").unwrap();
-        assert_eq!(f(&q, Field::Auth).value, FilterValue::Text("required".into()));
-        assert!(matches!(parse("auth:banana"), Err(ParseError::BadEnum { .. })));
+        assert_eq!(
+            f(&q, Field::Auth).value,
+            FilterValue::Text("required".into())
+        );
+        assert!(matches!(
+            parse("auth:banana"),
+            Err(ParseError::BadEnum { .. })
+        ));
     }
 
     #[test]

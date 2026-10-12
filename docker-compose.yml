@@ -1,0 +1,27 @@
+# Run Crusade itself (web UI + a worker) with a persistent data volume.
+# The local TEST RIG lives separately in docker/docker-compose.yml.
+services:
+  crusade-web:
+    build: .
+    command: ["serve", "--bind", "0.0.0.0:8088", "--config", "/crusade/config/crusade.docker.toml"]
+    ports: ["127.0.0.1:8088:8088"]
+    volumes:
+      - crusade-data:/crusade/data
+      - ./config:/crusade/config:ro
+      - ./blocklist.txt:/crusade/blocklist.txt:ro
+    restart: unless-stopped
+
+  # A scan worker pulling from the shared job queue. Scale with:
+  #   docker compose up --scale crusade-worker=4
+  crusade-worker:
+    build: .
+    command: ["worker", "--config", "/crusade/config/crusade.docker.toml"]
+    volumes:
+      - crusade-data:/crusade/data
+      - ./config:/crusade/config:ro
+      - ./blocklist.txt:/crusade/blocklist.txt:ro
+    restart: unless-stopped
+    depends_on: [crusade-web]
+
+volumes:
+  crusade-data:

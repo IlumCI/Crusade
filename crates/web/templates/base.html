@@ -156,6 +156,18 @@
   .svc .kv { color: var(--muted); font-size: 12px; }
   .svc .kv b { color: var(--fg); font-weight: 600; }
   .section-title { margin: 1.5rem 0 0.6rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  img.shot {
+    display: block;
+    max-width: 100%;
+    width: 360px;
+    margin-top: 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-2);
+  }
+  .timeline { border-left: 2px solid var(--border); margin: 0.5rem 0 0 0.4rem; padding-left: 1rem; }
+  .snapshot { margin-bottom: 1.25rem; }
+  .snapshot .when { color: var(--accent); font-weight: 600; margin-bottom: 0.4rem; }
   .info-grid { display: grid; grid-template-columns: 140px 1fr; gap: 0.25rem 1rem; }
   .info-grid .k { color: var(--muted); }
   #map { height: 420px; border: 1px solid var(--border); border-radius: 8px; margin-top: 0.5rem; background: var(--panel-2); }
@@ -172,6 +184,7 @@
   <span class="brand">CRUSADE</span>
   <nav>
     <a href="/">Search</a>
+    <a href="/trends">Trends</a>
     <a href="/stats">Stats</a>
   </nav>
 </header>

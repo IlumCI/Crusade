@@ -9,7 +9,10 @@
 //! Routes:
 //! - `GET /` — search page (query via `?q=&page=`).
 //! - `GET /host/:ip` — host detail (404 page if unknown).
+//! - `GET /host/:ip/history` — per-host scan-history timeline.
+//! - `GET /trends` — recent alerts + a dataset activity summary.
 //! - `GET /stats` — dataset facets and a Leaflet host map.
+//! - `GET /screens/:file` — captured screenshots (only via [`router_with`]).
 //! - `GET /api/search?q=&page=` — JSON `{query,total,page,results}`.
 //! - `GET /api/host/:ip` — JSON [`Host`](crusade_core::model::Host) or 404.
 //! - `GET /api/map` — JSON `[{ip,lat,lon,country}]` for located hosts.
@@ -22,35 +25,61 @@ mod handlers;
 mod views;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::{
-    routing::get,
-    Router,
-};
+use axum::{routing::get, Router};
 use crusade_store::Store;
 use tokio::sync::Mutex;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 /// Shared, lockable handle to the datastore used as axum router state.
 pub type SharedStore = Arc<Mutex<Store>>;
 
-/// Build the application router over a shared store.
+/// Build the application router over a shared store (no screenshot serving).
 pub fn router(store: SharedStore) -> Router {
-    Router::new()
+    router_with(store, None)
+}
+
+/// Build the application router, optionally mounting a static file service that
+/// serves captured screenshots. When `screenshots_dir` is `Some(dir)`, PNGs are
+/// served at `GET /screens/<file>` from `dir` (the filenames held in
+/// [`crusade_core::model::Service::screenshot`]).
+pub fn router_with(store: SharedStore, screenshots_dir: Option<PathBuf>) -> Router {
+    let mut app = Router::new()
         .route("/", get(handlers::index))
         .route("/host/:ip", get(handlers::host_detail))
+        .route("/host/:ip/history", get(handlers::host_history))
+        .route("/trends", get(handlers::trends))
         .route("/stats", get(handlers::stats))
         .route("/api/search", get(handlers::api_search))
         .route("/api/host/:ip", get(handlers::api_host))
         .route("/api/map", get(handlers::api_map))
-        .route("/healthz", get(handlers::healthz))
-        .with_state(store)
+        .route("/healthz", get(handlers::healthz));
+
+    if let Some(dir) = screenshots_dir {
+        // ServeDir already rejects path traversal; the view layer additionally
+        // only emits bare filenames. A missing file yields 404, not a panic.
+        app = app.nest_service("/screens", ServeDir::new(dir));
+    }
+
+    app.with_state(store)
 }
 
 /// Bind `addr` and serve the web UI until the process is terminated.
 pub async fn serve(addr: SocketAddr, store: SharedStore) -> anyhow::Result<()> {
-    let app = router(store).layer(TraceLayer::new_for_http());
+    serve_with(addr, store, None).await
+}
+
+/// Like [`serve`], but also serves screenshots from `screenshots_dir` (if any)
+/// at `/screens/<file>`.
+pub async fn serve_with(
+    addr: SocketAddr,
+    store: SharedStore,
+    screenshots_dir: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let app = router_with(store, screenshots_dir).layer(TraceLayer::new_for_http());
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "crusade-web listening");
     axum::serve(listener, app).await?;
@@ -65,6 +94,7 @@ mod tests {
     use crusade_core::model::{AuthState, Host, HttpInfo, Service, SshInfo, Tag, Transport};
     use http_body_util::BodyExt;
     use std::net::IpAddr;
+    use time::OffsetDateTime;
     use tower::ServiceExt; // for `oneshot`
 
     fn seeded_store() -> SharedStore {
@@ -102,6 +132,7 @@ mod tests {
             kex_algorithms: vec!["curve25519-sha256".into()],
             hassh: Some("06046964c022c6407d15a27b12a6a4fb".into()),
         });
+        svc.screenshot = Some("203.0.113.10_80.png".into());
         host.services.push(svc);
         // A matched CVE with a known public exploit.
         host.tags.push(Tag {
@@ -109,7 +140,13 @@ mod tests {
             cve: Some("CVE-2021-1234".into()),
             detail: Some("EDB-50123; msf: exploit/linux/http/example".into()),
         });
+        // Upsert twice (distinct observation times) so the append-only history
+        // has two rows for this host's port.
+        host.services[0].observed_at = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
         store.upsert_host(&host).expect("seed host 1");
+        host.services[0].observed_at = OffsetDateTime::from_unix_timestamp(1_700_086_400).unwrap();
+        host.services[0].version = Some("1.25.1".into());
+        store.upsert_host(&host).expect("seed host 1 again");
 
         let ip2: IpAddr = "198.51.100.7".parse().unwrap();
         let mut host2 = Host::new(ip2);
@@ -132,7 +169,12 @@ mod tests {
     async fn healthz_ok() {
         let app = router(seeded_store());
         let resp = app
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -153,7 +195,10 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
-        assert!(body.contains("203.0.113.10"), "body missing seeded IP: {body}");
+        assert!(
+            body.contains("203.0.113.10"),
+            "body missing seeded IP: {body}"
+        );
     }
 
     #[tokio::test]
@@ -170,7 +215,10 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
-        assert!(body.contains("Could not parse query"), "expected friendly error");
+        assert!(
+            body.contains("Could not parse query"),
+            "expected friendly error"
+        );
     }
 
     #[tokio::test]
@@ -226,7 +274,12 @@ mod tests {
     async fn api_map_only_located_hosts() {
         let app = router(seeded_store());
         let resp = app
-            .oneshot(Request::builder().uri("/api/map").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/map")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -258,14 +311,23 @@ mod tests {
             "host page missing JARM value"
         );
         // Favicon hash rendered with a clickable pivot to the favicon search.
-        assert!(body.contains("-247388890"), "host page missing favicon hash");
+        assert!(
+            body.contains("-247388890"),
+            "host page missing favicon hash"
+        );
         assert!(
             body.contains("/?q=http.favicon.hash%3A-247388890"),
             "host page missing favicon pivot link: {body}"
         );
         // SSH + technologies surfaced as well.
-        assert!(body.contains("SSH-2.0-OpenSSH_8.9"), "host page missing SSH banner");
-        assert!(body.contains("06046964c022c6407d15a27b12a6a4fb"), "host page missing HASSH");
+        assert!(
+            body.contains("SSH-2.0-OpenSSH_8.9"),
+            "host page missing SSH banner"
+        );
+        assert!(
+            body.contains("06046964c022c6407d15a27b12a6a4fb"),
+            "host page missing HASSH"
+        );
     }
 
     #[tokio::test]
@@ -283,7 +345,10 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
         // Auth posture badge rendered on the service header line.
-        assert!(body.contains("auth:open"), "host page missing auth badge: {body}");
+        assert!(
+            body.contains("auth:open"),
+            "host page missing auth badge: {body}"
+        );
         // exploit-available tag surfaced with its CVE and a pivot link.
         assert!(
             body.contains("exploit-available"),
@@ -334,18 +399,131 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
-        assert!(body.contains("Stats for this search"), "expected scoped header");
+        assert!(
+            body.contains("Stats for this search"),
+            "expected scoped header"
+        );
     }
 
     #[tokio::test]
     async fn stats_page_renders() {
         let app = router(seeded_store());
         let resp = app
-            .oneshot(Request::builder().uri("/stats").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
         assert!(body.contains("leaflet"), "expected leaflet embed");
+    }
+
+    #[tokio::test]
+    async fn host_history_shows_timeline() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/host/203.0.113.10/history")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        // The port appears in the timeline.
+        assert!(body.contains("80/tcp"), "history page missing port: {body}");
+        // Two upserts at distinct times => two snapshots.
+        assert!(
+            body.contains("2 snapshots"),
+            "expected two history snapshots: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_history_empty_for_unknown() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/host/192.0.2.123/history")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Rendered empty-state page (200) rather than a panic.
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("No scan history"),
+            "expected empty-state message"
+        );
+    }
+
+    #[tokio::test]
+    async fn trends_page_renders() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/trends")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("Recent alerts"), "expected alerts section");
+        assert!(body.contains("Top ports"), "expected ports facet");
+    }
+
+    #[tokio::test]
+    async fn host_page_shows_screenshot() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/host/203.0.113.10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("/screens/203.0.113.10_80.png"),
+            "host page missing screenshot img: {body}"
+        );
+        // And the History link is present.
+        assert!(
+            body.contains("/host/203.0.113.10/history"),
+            "missing history link"
+        );
+    }
+
+    #[tokio::test]
+    async fn router_with_screens_dir_missing_file_is_404() {
+        let dir = std::env::temp_dir().join("crusade_web_screens_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router_with(seeded_store(), Some(dir));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/screens/nope.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Missing file: a clean 404, not a panic.
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

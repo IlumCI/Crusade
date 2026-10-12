@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS services (
     tls_version TEXT,
     ics_protocol TEXT,
     auth_state  TEXT,
+    screenshot  TEXT,
     has_screenshot INTEGER NOT NULL DEFAULT 0,
     observed_at INTEGER NOT NULL,
     banner      TEXT,
@@ -100,3 +101,21 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_ts        ON alerts(ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_delivered ON alerts(delivered);
+
+-- Distributed scan job queue. Multiple `crusade worker` processes on the same
+-- host (WAL) claim pending jobs atomically and record completion. (Cross-host
+-- scale-out needs a shared/networked DB — see ROADMAP.)
+CREATE TABLE IF NOT EXISTS jobs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    target      TEXT NOT NULL,       -- IP or CIDR
+    ports       TEXT,                -- CSV of TCP ports, or NULL for defaults
+    udp         INTEGER NOT NULL DEFAULT 0,
+    ics         INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'pending', -- pending|running|done|failed
+    worker      TEXT,
+    note        TEXT,                -- result summary or error
+    created_at  INTEGER NOT NULL,
+    claimed_at  INTEGER,
+    finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id);

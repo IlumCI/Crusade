@@ -154,7 +154,10 @@ fn unauthenticated_signal(svc: &Service) -> Option<(String, String)> {
     if let Some(ics) = &svc.ics {
         return Some((
             "ics".to_string(),
-            format!("{} ICS/OT device on {} (no authentication)", ics.protocol, svc.port),
+            format!(
+                "{} ICS/OT device on {} (no authentication)",
+                ics.protocol, svc.port
+            ),
         ));
     }
 
@@ -211,7 +214,12 @@ fn remote_access_kind(svc: &Service) -> Option<&'static str> {
         3389 => return Some("rdp"),
         _ => {}
     }
-    match svc.service.as_deref().map(|s| s.to_ascii_lowercase()).as_deref() {
+    match svc
+        .service
+        .as_deref()
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("vnc") => Some("vnc"),
         Some("rdp") | Some("ms-wbt-server") => Some("rdp"),
         _ => None,
@@ -248,14 +256,18 @@ fn is_admin_panel(svc: &Service) -> bool {
     };
     let hay = |s: &str| {
         let lower = s.to_ascii_lowercase();
-        ADMIN_PANEL_NEEDLES.iter().any(|needle| lower.contains(needle))
+        ADMIN_PANEL_NEEDLES
+            .iter()
+            .any(|needle| lower.contains(needle))
     };
     http.title.as_deref().is_some_and(hay) || http.server.as_deref().is_some_and(hay)
 }
 
 /// True if `title` looks like a stock server default landing page.
 fn is_default_page(title: &str) -> bool {
-    DEFAULT_PAGE_NEEDLES.iter().any(|needle| title.contains(needle))
+    DEFAULT_PAGE_NEEDLES
+        .iter()
+        .any(|needle| title.contains(needle))
 }
 
 /// True if a service looks like plaintext HTTP (not HTTPS).
@@ -266,9 +278,7 @@ fn is_plaintext_http(svc: &Service) -> bool {
     if svc.service.as_deref() == Some("https") {
         return false;
     }
-    svc.service.as_deref() == Some("http")
-        || svc.http.is_some()
-        || HTTP_PORTS.contains(&svc.port)
+    svc.service.as_deref() == Some("http") || svc.http.is_some() || HTTP_PORTS.contains(&svc.port)
 }
 
 /// Label notable exposed ports (databases, remote access, file sharing).
@@ -436,7 +446,10 @@ mod tests {
             .find(|t| t.name == "unauthenticated-access")
             .and_then(|t| t.detail.clone())
             .unwrap_or_default();
-        assert!(detail.contains("redis") && detail.contains("6379"), "{detail}");
+        assert!(
+            detail.contains("redis") && detail.contains("6379"),
+            "{detail}"
+        );
     }
 
     #[test]
@@ -498,11 +511,11 @@ mod tests {
         let mut h = host();
         h.services.push(web);
 
-        let names: Vec<String> = heuristic_tags(&h)
-            .into_iter()
-            .map(|t| t.name)
-            .collect();
-        assert!(names.iter().any(|n| n == "unauthenticated-access"), "{names:?}");
+        let names: Vec<String> = heuristic_tags(&h).into_iter().map(|t| t.name).collect();
+        assert!(
+            names.iter().any(|n| n == "unauthenticated-access"),
+            "{names:?}"
+        );
         assert!(names.iter().any(|n| n == "unauth-http-panel"), "{names:?}");
     }
 
@@ -515,11 +528,11 @@ mod tests {
         let mut h = host();
         h.services.push(db);
 
-        let names: Vec<String> = heuristic_tags(&h)
-            .into_iter()
-            .map(|t| t.name)
-            .collect();
-        assert!(!names.iter().any(|n| n == "unauthenticated-access"), "{names:?}");
+        let names: Vec<String> = heuristic_tags(&h).into_iter().map(|t| t.name).collect();
+        assert!(
+            !names.iter().any(|n| n == "unauthenticated-access"),
+            "{names:?}"
+        );
         assert!(!names.iter().any(|n| n == "unauth-redis"), "{names:?}");
     }
 }

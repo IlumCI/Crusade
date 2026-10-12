@@ -12,18 +12,22 @@
 //! The [`enrich_host`] entry point applies GeoIP/ASN and reverse DNS to a
 //! mutable [`Host`] according to an [`EnrichConfig`].
 //!
-//! Screenshot capture is deferred to v2; a [`Screenshotter`] trait and a
-//! [`NoopScreenshotter`] mark the seam without pulling in a headless browser.
+//! * [`screenshot`] — best-effort web-service screenshots via a headless
+//!   Chrome/Chromium binary ([`ChromeScreenshotter`]). A [`Screenshotter`]
+//!   trait keeps the seam stable, and [`NoopScreenshotter`] is the default when
+//!   screenshots are disabled or no browser is available.
 
 pub mod ct;
 pub mod dns;
 pub mod geoasn;
+pub mod screenshot;
 
 use crusade_core::Host;
 
 pub use ct::{crtsh_subdomains, crtsh_url, parse_crtsh_names};
 pub use dns::reverse_dns;
 pub use geoasn::{parse_ip2asn_tsv, AsnInfo, CityInfo, GeoAsnDb, RawRange};
+pub use screenshot::{chrome_screenshot_args, detect_chrome, ChromeScreenshotter};
 
 /// Which enrichment steps to run.
 #[derive(Debug, Clone)]
@@ -36,7 +40,10 @@ pub struct EnrichConfig {
 
 impl Default for EnrichConfig {
     fn default() -> Self {
-        EnrichConfig { geo: true, reverse_dns: true }
+        EnrichConfig {
+            geo: true,
+            reverse_dns: true,
+        }
     }
 }
 
@@ -111,7 +118,10 @@ mod tests {
         let tsv = "192.0.2.0\t192.0.2.255\t64500\tDE\tEXAMPLE-DOC-NET\n";
         let db = GeoAsnDb::from_tsv(tsv, None);
         let mut host = Host::new("192.0.2.10".parse::<IpAddr>().unwrap());
-        let cfg = EnrichConfig { geo: true, reverse_dns: false };
+        let cfg = EnrichConfig {
+            geo: true,
+            reverse_dns: false,
+        };
 
         // Drive the future to completion on a tiny runtime (no I/O happens).
         futures_block_on(enrich_host(&mut host, &db, &cfg));

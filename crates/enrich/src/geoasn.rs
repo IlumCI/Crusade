@@ -132,7 +132,13 @@ pub fn parse_ip2asn_tsv(data: &str) -> Vec<RawRange> {
             (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_)) => {}
             _ => continue,
         }
-        out.push(RawRange { start, end, asn, country, org });
+        out.push(RawRange {
+            start,
+            end,
+            asn,
+            country,
+            org,
+        });
     }
     out
 }
@@ -204,12 +210,14 @@ impl GeoAsnDb {
             if line.is_empty() {
                 continue;
             }
-            let cols: Vec<&str> = line.split(',').map(|c| c.trim().trim_matches('"')).collect();
+            let cols: Vec<&str> = line
+                .split(',')
+                .map(|c| c.trim().trim_matches('"'))
+                .collect();
             if cols.len() < 8 {
                 continue;
             }
-            let (Ok(start), Ok(end)) =
-                (cols[0].parse::<IpAddr>(), cols[1].parse::<IpAddr>())
+            let (Ok(start), Ok(end)) = (cols[0].parse::<IpAddr>(), cols[1].parse::<IpAddr>())
             else {
                 continue;
             };
@@ -259,7 +267,11 @@ impl GeoAsnDb {
         }
         let r = &self.v4[idx - 1];
         if key <= r.end {
-            Some(AsnInfo { asn: r.asn, country: r.country.clone(), org: r.org.clone() })
+            Some(AsnInfo {
+                asn: r.asn,
+                country: r.country.clone(),
+                org: r.org.clone(),
+            })
         } else {
             None
         }
@@ -274,7 +286,11 @@ impl GeoAsnDb {
         }
         let r = &self.v6[idx - 1];
         if key <= r.end {
-            Some(AsnInfo { asn: r.asn, country: r.country.clone(), org: r.org.clone() })
+            Some(AsnInfo {
+                asn: r.asn,
+                country: r.country.clone(),
+                org: r.org.clone(),
+            })
         } else {
             None
         }
@@ -300,7 +316,11 @@ impl GeoAsnDb {
         }
         let r = &ranges[idx - 1];
         if key <= r.end {
-            Some(CityInfo { city: r.city.clone(), latitude: r.lat, longitude: r.lon })
+            Some(CityInfo {
+                city: r.city.clone(),
+                latitude: r.lat,
+                longitude: r.lon,
+            })
         } else {
             None
         }
@@ -315,13 +335,17 @@ impl GeoAsnDb {
         for r in self.v4.iter().filter(|r| r.asn == asn) {
             for (net, prefix) in range_to_cidr_blocks(r.start as u128, r.end as u128, 32) {
                 let addr = Ipv4Addr::from(net as u32);
-                out.push(IpNet::V4(Ipv4Net::new(addr, prefix).expect("valid v4 prefix")));
+                out.push(IpNet::V4(
+                    Ipv4Net::new(addr, prefix).expect("valid v4 prefix"),
+                ));
             }
         }
         for r in self.v6.iter().filter(|r| r.asn == asn) {
             for (net, prefix) in range_to_cidr_blocks(r.start, r.end, 128) {
                 let addr = Ipv6Addr::from(net);
-                out.push(IpNet::V6(Ipv6Net::new(addr, prefix).expect("valid v6 prefix")));
+                out.push(IpNet::V6(
+                    Ipv6Net::new(addr, prefix).expect("valid v6 prefix"),
+                ));
             }
         }
         out
@@ -352,13 +376,20 @@ fn range_to_cidr_blocks(start: u128, end: u128, bits: u32) -> Vec<(u128, u8)> {
     let mut s = start;
     loop {
         // Largest block (in host bits) permitted by the alignment of `s`.
-        let max_align = if s == 0 { bits } else { s.trailing_zeros().min(bits) };
+        let max_align = if s == 0 {
+            bits
+        } else {
+            s.trailing_zeros().min(bits)
+        };
         // Shrink until the block fits inside the remaining span `[s, end]`.
         let mut size = max_align;
         loop {
             let span = end - s; // safe: end >= s
-            let block_minus_one =
-                if size >= 128 { u128::MAX } else { (1u128 << size) - 1 };
+            let block_minus_one = if size >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << size) - 1
+            };
             if block_minus_one <= span {
                 break;
             }
@@ -403,7 +434,9 @@ mod tests {
     #[test]
     fn lookup_hit_returns_asn_country_org() {
         let db = GeoAsnDb::from_tsv(FIXTURE_V4, None);
-        let info = db.lookup_asn("192.0.2.42".parse().unwrap()).expect("in range");
+        let info = db
+            .lookup_asn("192.0.2.42".parse().unwrap())
+            .expect("in range");
         assert_eq!(
             info,
             AsnInfo {
@@ -494,7 +527,9 @@ mod tests {
     fn v6_lookup_and_prefixes() {
         let v6 = "2001:db8::\t2001:db8::ffff\t64502\tNL\tV6-DOC\n";
         let db = GeoAsnDb::from_tsv("", Some(v6));
-        let info = db.lookup_asn_v6("2001:db8::5".parse().unwrap()).expect("in range");
+        let info = db
+            .lookup_asn_v6("2001:db8::5".parse().unwrap())
+            .expect("in range");
         assert_eq!(info.asn, 64502);
         let prefixes = db.prefixes_for_asn(64502);
         assert_eq!(prefixes, vec!["2001:db8::/112".parse::<IpNet>().unwrap()]);

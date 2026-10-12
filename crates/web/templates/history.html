@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Crusade — {{ ip }} history{% endblock %}
+{% block content %}
+<p><a href="/host/{{ ip }}">&larr; Back to {{ ip }}</a></p>
+<h1 style="margin:0 0 0.5rem">History — {{ ip }}</h1>
+
+{% if snapshots.is_empty() %}
+<div class="error">No scan history recorded for {{ ip }}.</div>
+<p><a href="/">&larr; Back to search</a></p>
+{% else %}
+<div class="count">{{ snapshots.len() }} snapshot{% if snapshots.len() != 1 %}s{% endif %}, newest first.</div>
+<div class="timeline">
+  {% for snap in snapshots %}
+  <div class="snapshot">
+    <div class="when">{{ snap.time }}</div>
+    {% for s in snap.services %}
+    <div class="svc">
+      <h3>{{ s.port }}/{{ s.transport }}{% if let Some(svc) = s.service %} · {{ svc }}{% endif %}{% if let Some(auth) = s.auth %} <span class="chip{% if s.auth_open %} vuln{% else %} ok{% endif %}">auth:{{ auth }}</span>{% endif %}</h3>
+      <div class="kv">
+        {% if let Some(p) = s.product %}<b>{{ p }}</b>{% if let Some(v) = s.version %} {{ v }}{% endif %}{% else %}<span style="opacity:0.6">(no product fingerprint)</span>{% endif %}
+        {% if let Some(cpe) = s.cpe %} · {{ cpe }}{% endif %}
+      </div>
+      {% if let Some(tls) = s.tls %}
+      <div class="kv" style="margin-top:0.3rem">
+        TLS{% if let Some(ver) = tls.version %} <b>{{ ver }}</b>{% endif %}{% if let Some(cn) = tls.subject_cn %} · CN={{ cn }}{% endif %}{% if tls.self_signed %} · <span class="chip vuln">self-signed</span>{% endif %}
+      </div>
+      {% endif %}
+      {% if let Some(ics) = s.ics %}
+      <div class="kv" style="margin-top:0.3rem">
+        ICS/OT · <b>{{ ics.protocol }}</b>{% if let Some(v) = ics.vendor %} · vendor: {{ v }}{% endif %}{% if let Some(pr) = ics.product %} · {{ pr }}{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

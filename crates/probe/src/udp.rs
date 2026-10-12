@@ -93,7 +93,7 @@ pub fn build_dns_version_query() -> Vec<u8> {
     q.extend_from_slice(&[0x00, 0x00]); // ancount
     q.extend_from_slice(&[0x00, 0x00]); // nscount
     q.extend_from_slice(&[0x00, 0x00]); // arcount
-    // QNAME: "version" "bind" 0
+                                        // QNAME: "version" "bind" 0
     q.push(7);
     q.extend_from_slice(b"version");
     q.push(4);
@@ -116,7 +116,7 @@ pub fn parse_dns_version_bind(resp: &[u8]) -> Option<String> {
     // Skip the question.
     let mut off = skip_dns_name(resp, 12)?;
     off += 4; // qtype + qclass
-    // First answer RR.
+              // First answer RR.
     off = skip_dns_name(resp, off)?;
     // type(2) class(2) ttl(4) rdlength(2)
     let rdlength = u16::from_be_bytes([*resp.get(off + 8)?, *resp.get(off + 9)?]) as usize;
@@ -374,7 +374,7 @@ pub fn build_netbios_nodestatus() -> Vec<u8> {
     p.extend_from_slice(&[0x00, 0x00]); // ancount
     p.extend_from_slice(&[0x00, 0x00]); // nscount
     p.extend_from_slice(&[0x00, 0x00]); // arcount
-    // Encoded name "*" (0x2a then 15 nulls) -> first-level encoding.
+                                        // Encoded name "*" (0x2a then 15 nulls) -> first-level encoding.
     p.push(0x20); // 32-byte encoded name
     p.extend_from_slice(&encode_netbios_name(b"*"));
     p.push(0x00); // name terminator
@@ -404,7 +404,7 @@ pub fn parse_netbios_names(resp: &[u8]) -> Vec<String> {
         // Header is 12 bytes; then the (echoed) question.
         let mut off = skip_dns_name(resp, 12)?;
         off += 4; // qtype + qclass
-        // Answer RR header.
+                  // Answer RR header.
         off = skip_dns_name(resp, off)?;
         let rdlength = u16::from_be_bytes([*resp.get(off + 8)?, *resp.get(off + 9)?]) as usize;
         let rdata_start = off + 10;
@@ -448,7 +448,7 @@ mod tests {
     fn dns_query_is_well_formed() {
         let q = build_dns_version_query();
         assert_eq!(&q[4..6], &[0x00, 0x01]); // qdcount
-        // Ends with TXT/CHAOS.
+                                             // Ends with TXT/CHAOS.
         assert_eq!(&q[q.len() - 4..], &[0x00, 0x10, 0x00, 0x03]);
         assert!(q.windows(7).any(|w| w == b"version"));
     }

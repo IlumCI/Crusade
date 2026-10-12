@@ -105,11 +105,7 @@ pub fn favicon_hash(bytes: &[u8]) -> i32 {
 ///
 /// Returns `None` if the connection fails, the response is not a `200`, or the
 /// body is empty. Strictly a single GET and one read.
-pub async fn fetch_favicon_hash_plain(
-    ip: IpAddr,
-    port: u16,
-    timeout: Duration,
-) -> Option<i32> {
+pub async fn fetch_favicon_hash_plain(ip: IpAddr, port: u16, timeout: Duration) -> Option<i32> {
     let connect = TcpStream::connect((ip, port));
     let mut stream = tokio::time::timeout(timeout, connect).await.ok()?.ok()?;
     favicon_over(&mut stream, ip, timeout).await
@@ -198,9 +194,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// The security-relevant response headers we report presence of, mapped from
@@ -217,8 +211,14 @@ const SECURITY_HEADERS: &[(&str, &str)] = &[
     ("referrer-policy", "Referrer-Policy"),
     ("permissions-policy", "Permissions-Policy"),
     ("cross-origin-opener-policy", "Cross-Origin-Opener-Policy"),
-    ("cross-origin-resource-policy", "Cross-Origin-Resource-Policy"),
-    ("cross-origin-embedder-policy", "Cross-Origin-Embedder-Policy"),
+    (
+        "cross-origin-resource-policy",
+        "Cross-Origin-Resource-Policy",
+    ),
+    (
+        "cross-origin-embedder-policy",
+        "Cross-Origin-Embedder-Policy",
+    ),
     ("x-xss-protection", "X-XSS-Protection"),
 ];
 
@@ -235,8 +235,10 @@ pub fn detect_security_headers(headers: &[(String, String)]) -> Vec<String> {
 }
 
 static META_GENERATOR_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)<meta[^>]+name\s*=\s*["']?generator["']?[^>]*content\s*=\s*["']([^"'>]+)["']"#)
-        .expect("valid generator regex")
+    Regex::new(
+        r#"(?is)<meta[^>]+name\s*=\s*["']?generator["']?[^>]*content\s*=\s*["']([^"'>]+)["']"#,
+    )
+    .expect("valid generator regex")
 });
 
 /// Lightweight, rule-based technology detection from response headers and body.
@@ -256,9 +258,11 @@ pub fn detect_technologies(headers: &[(String, String)], body: &str) -> Vec<Stri
 
     for (k, v) in headers {
         match k.as_str() {
-            "server" | "x-powered-by" | "x-generator" | "x-aspnet-version" | "x-aspnetmvc-version" => {
-                add(v.clone())
-            }
+            "server"
+            | "x-powered-by"
+            | "x-generator"
+            | "x-aspnet-version"
+            | "x-aspnetmvc-version" => add(v.clone()),
             _ => {}
         }
     }
@@ -329,7 +333,10 @@ mod tests {
     #[test]
     fn security_headers_detected_canonically() {
         let headers = vec![
-            ("strict-transport-security".to_string(), "max-age=31536000".to_string()),
+            (
+                "strict-transport-security".to_string(),
+                "max-age=31536000".to_string(),
+            ),
             ("content-type".to_string(), "text/html".to_string()),
             ("x-frame-options".to_string(), "DENY".to_string()),
         ];

@@ -15,6 +15,22 @@ fn fmt_time(dt: OffsetDateTime) -> String {
     dt.format(&Rfc3339).unwrap_or_else(|_| dt.to_string())
 }
 
+/// Format a unix-seconds timestamp for display, falling back to the raw number.
+fn fmt_unix(secs: i64) -> String {
+    OffsetDateTime::from_unix_timestamp(secs)
+        .ok()
+        .and_then(|dt| dt.format(&Rfc3339).ok())
+        .unwrap_or_else(|| secs.to_string())
+}
+
+/// A screenshot filename is safe to serve only when it is a bare filename with
+/// no path separators (so it can't escape the screenshots directory). Returns
+/// the filename when safe, else `None`.
+fn safe_screenshot(file: Option<&str>) -> Option<String> {
+    file.filter(|f| !f.is_empty() && !f.contains('/') && !f.contains('\\'))
+        .map(str::to_string)
+}
+
 /// Percent-encode a query-string component (same rules as the pager links in
 /// `handlers`), used to build safe `/?q=...` pivot URLs from raw fingerprint
 /// values that may contain `:`, `+`, `/` or `=`.
@@ -174,7 +190,10 @@ impl From<&SshInfo> for SshView {
             banner: s.banner.clone(),
             host_key_type: s.host_key_type.clone(),
             host_key_sha256: s.host_key_sha256.clone(),
-            host_key_url: s.host_key_sha256.as_deref().map(|k| pivot("ssh.hostkey", k)),
+            host_key_url: s
+                .host_key_sha256
+                .as_deref()
+                .map(|k| pivot("ssh.hostkey", k)),
             kex_algorithms: s.kex_algorithms.clone(),
             hassh: s.hassh.clone(),
             hassh_url: s.hassh.as_deref().map(|h| pivot("hassh", h)),
@@ -208,6 +227,9 @@ pub struct ServiceView {
     /// True when `auth` is `Open` — the notable "reachable without credentials"
     /// recon signal the template styles as a warning badge.
     pub auth_open: bool,
+    /// Sanitized screenshot filename (no path separators), served at
+    /// `/screens/<file>`. `None` when absent or unsafe to serve.
+    pub screenshot: Option<String>,
     pub observed_at: String,
 }
 
@@ -263,6 +285,7 @@ impl From<&Service> for ServiceView {
             ics: s.ics.as_ref().map(IcsView::from),
             auth,
             auth_open,
+            screenshot: safe_screenshot(s.screenshot.as_deref()),
             observed_at: fmt_time(s.observed_at),
         }
     }
@@ -348,6 +371,86 @@ pub struct StatsTemplate {
 #[template(path = "not_found.html")]
 pub struct NotFoundTemplate {
     pub message: String,
+}
+
+/// One point in time in a host's scan history: every service snapshot that
+/// shares the same `observed_at`.
+pub struct HistorySnapshot {
+    pub time: String,
+    pub services: Vec<ServiceView>,
+}
+
+/// The per-host history / timeline page.
+#[derive(Template)]
+#[template(path = "history.html")]
+pub struct HistoryTemplate {
+    pub ip: String,
+    /// Reverse-chronological snapshots (newest first). Empty when no history.
+    pub snapshots: Vec<HistorySnapshot>,
+}
+
+impl HistoryTemplate {
+    /// Build a timeline from raw `(observed_at unix secs, Service)` rows that
+    /// `Store::service_history` returns newest-first. Consecutive rows sharing
+    /// a timestamp are grouped into one snapshot.
+    pub fn from_history(ip: String, rows: Vec<(i64, crusade_core::Service)>) -> Self {
+        let mut snapshots: Vec<HistorySnapshot> = Vec::new();
+        let mut cur_ts: Option<i64> = None;
+        for (ts, svc) in rows {
+            let view = ServiceView::from(&svc);
+            if cur_ts == Some(ts) {
+                if let Some(last) = snapshots.last_mut() {
+                    last.services.push(view);
+                    continue;
+                }
+            }
+            cur_ts = Some(ts);
+            snapshots.push(HistorySnapshot {
+                time: fmt_unix(ts),
+                services: vec![view],
+            });
+        }
+        HistoryTemplate { ip, snapshots }
+    }
+}
+
+/// One alert row as shown on the trends page.
+pub struct AlertView {
+    pub time: String,
+    pub ip: String,
+    pub kind: String,
+    pub detail: String,
+    pub delivered: bool,
+}
+
+impl From<&crusade_store::Alert> for AlertView {
+    fn from(a: &crusade_store::Alert) -> Self {
+        AlertView {
+            time: fmt_unix(a.ts),
+            ip: a.ip.clone(),
+            kind: a.kind.clone(),
+            detail: a.detail.clone(),
+            delivered: a.delivered,
+        }
+    }
+}
+
+/// The trends / alerts overview page.
+#[derive(Template)]
+#[template(path = "trends.html")]
+pub struct TrendsTemplate {
+    /// Total hosts in the index.
+    pub host_count: i64,
+    /// Most recent alerts, newest first.
+    pub alerts: Vec<AlertView>,
+    pub ports: Vec<Facet>,
+    pub ports_max: i64,
+    pub products: Vec<Facet>,
+    pub products_max: i64,
+    pub countries: Vec<Facet>,
+    pub countries_max: i64,
+    pub tags: Vec<Facet>,
+    pub tags_max: i64,
 }
 
 /// Largest count in a facet list, floored at 1 so bar math never divides by 0.

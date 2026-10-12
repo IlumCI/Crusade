@@ -323,7 +323,10 @@ mod tests {
     #[test]
     fn hassh_matches_known_md5() {
         // Cross-checked against Python hashlib.md5.
-        assert_eq!(hassh("a", "b", "c", "d"), "845425be4f77f4097e014a6591497010");
+        assert_eq!(
+            hassh("a", "b", "c", "d"),
+            "845425be4f77f4097e014a6591497010"
+        );
         assert_eq!(
             hassh("curve25519-sha256", "aes128-ctr", "hmac-sha2-256", "none"),
             "e97d07603350d1111ec2b64bf25413c9"
@@ -345,8 +348,7 @@ mod tests {
     #[test]
     fn frames_packet_to_block_multiple() {
         let framed = frame_packet(&[SSH_MSG_KEXINIT, 1, 2, 3]);
-        let packet_len =
-            u32::from_be_bytes([framed[0], framed[1], framed[2], framed[3]]) as usize;
+        let packet_len = u32::from_be_bytes([framed[0], framed[1], framed[2], framed[3]]) as usize;
         assert_eq!(framed.len(), 4 + packet_len);
         // padding_length + payload + padding must be a multiple of 8.
         assert_eq!((framed.len() - 4) % 8, 0);

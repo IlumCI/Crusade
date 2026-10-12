@@ -28,49 +28,114 @@ pub fn compile(query: &Query) -> Compiled {
         let neg = filter.negate;
         match filter.field {
             Field::Port => {
-                push_service_exists(&mut clauses, &mut params, neg, "port = ?", val(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "port = ?",
+                    val(&filter.value),
+                );
             }
             Field::Product => {
-                push_service_exists(&mut clauses, &mut params, neg, "product LIKE ? COLLATE NOCASE", like(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "product LIKE ? COLLATE NOCASE",
+                    like(&filter.value),
+                );
             }
             Field::Version => {
-                push_service_exists(&mut clauses, &mut params, neg, "version LIKE ? COLLATE NOCASE", like(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "version LIKE ? COLLATE NOCASE",
+                    like(&filter.value),
+                );
             }
             Field::SslCn => {
-                push_service_exists(&mut clauses, &mut params, neg, "ssl_cn LIKE ? COLLATE NOCASE", like(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "ssl_cn LIKE ? COLLATE NOCASE",
+                    like(&filter.value),
+                );
             }
             Field::HasScreenshot => {
                 let want = matches!(filter.value, FilterValue::Bool(true));
                 // has_screenshot filter: exists a service with the flag set.
                 let inner = "has_screenshot = 1";
                 if want == !neg {
-                    clauses.push(format!("EXISTS (SELECT 1 FROM services s WHERE s.ip = hosts.ip AND {inner})"));
+                    clauses.push(format!(
+                        "EXISTS (SELECT 1 FROM services s WHERE s.ip = hosts.ip AND {inner})"
+                    ));
                 } else {
-                    clauses.push(format!("NOT EXISTS (SELECT 1 FROM services s WHERE s.ip = hosts.ip AND {inner})"));
+                    clauses.push(format!(
+                        "NOT EXISTS (SELECT 1 FROM services s WHERE s.ip = hosts.ip AND {inner})"
+                    ));
                 }
             }
             Field::Country => {
-                push_host_col(&mut clauses, &mut params, neg, "country = ? COLLATE NOCASE", val(&filter.value));
+                push_host_col(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "country = ? COLLATE NOCASE",
+                    val(&filter.value),
+                );
             }
             Field::Asn => {
-                push_host_col(&mut clauses, &mut params, neg, "asn = ?", val(&filter.value));
+                push_host_col(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "asn = ?",
+                    val(&filter.value),
+                );
             }
             Field::Org => {
-                push_host_col(&mut clauses, &mut params, neg, "org LIKE ? COLLATE NOCASE", like(&filter.value));
+                push_host_col(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "org LIKE ? COLLATE NOCASE",
+                    like(&filter.value),
+                );
             }
             Field::Hostname => {
-                push_host_col(&mut clauses, &mut params, neg, "hostnames LIKE ? COLLATE NOCASE", like(&filter.value));
+                push_host_col(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "hostnames LIKE ? COLLATE NOCASE",
+                    like(&filter.value),
+                );
             }
             Field::Tag => {
-                let inner = "SELECT 1 FROM tags t WHERE t.ip = hosts.ip AND t.name = ? COLLATE NOCASE";
+                let inner =
+                    "SELECT 1 FROM tags t WHERE t.ip = hosts.ip AND t.name = ? COLLATE NOCASE";
                 params.push(val(&filter.value));
                 clauses.push(format!("{} EXISTS ({inner})", if neg { "NOT" } else { "" }));
             }
             Field::Before => {
-                push_host_col(&mut clauses, &mut params, neg, "last_seen < ?", val(&filter.value));
+                push_host_col(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "last_seen < ?",
+                    val(&filter.value),
+                );
             }
             Field::After => {
-                push_host_col(&mut clauses, &mut params, neg, "last_seen >= ?", val(&filter.value));
+                push_host_col(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "last_seen >= ?",
+                    val(&filter.value),
+                );
             }
             // --- v2 ---
             Field::Net => match net_bounds(&filter.value) {
@@ -78,31 +143,72 @@ pub fn compile(query: &Query) -> Compiled {
                     params.push(Value::Blob(lo.to_vec()));
                     params.push(Value::Blob(hi.to_vec()));
                     let cond = "hosts.ip_sort BETWEEN ? AND ?";
-                    clauses.push(if neg { format!("NOT ({cond})") } else { cond.to_string() });
+                    clauses.push(if neg {
+                        format!("NOT ({cond})")
+                    } else {
+                        cond.to_string()
+                    });
                 }
                 // Unparseable CIDR/IP: match nothing rather than erroring.
                 None => clauses.push(if neg { "1=1".into() } else { "1=0".into() }),
             },
             Field::City => {
-                push_host_col(&mut clauses, &mut params, neg, "city LIKE ? COLLATE NOCASE", like(&filter.value));
+                push_host_col(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "city LIKE ? COLLATE NOCASE",
+                    like(&filter.value),
+                );
             }
             Field::Transport => {
-                push_service_exists(&mut clauses, &mut params, neg, "transport = ?", val(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "transport = ?",
+                    val(&filter.value),
+                );
             }
             Field::Jarm => {
-                push_service_exists(&mut clauses, &mut params, neg, "jarm = ?", val(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "jarm = ?",
+                    val(&filter.value),
+                );
             }
             Field::Favicon => {
-                push_service_exists(&mut clauses, &mut params, neg, "favicon_hash = ?", val(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "favicon_hash = ?",
+                    val(&filter.value),
+                );
             }
             Field::SshHostkey => {
-                push_service_exists(&mut clauses, &mut params, neg, "ssh_hostkey LIKE ? COLLATE NOCASE", like(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "ssh_hostkey LIKE ? COLLATE NOCASE",
+                    like(&filter.value),
+                );
             }
             Field::Hassh => {
-                push_service_exists(&mut clauses, &mut params, neg, "hassh = ? COLLATE NOCASE", val(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "hassh = ? COLLATE NOCASE",
+                    val(&filter.value),
+                );
             }
             Field::Vuln => {
-                let inner = "SELECT 1 FROM tags t WHERE t.ip = hosts.ip AND t.cve = ? COLLATE NOCASE";
+                let inner =
+                    "SELECT 1 FROM tags t WHERE t.ip = hosts.ip AND t.cve = ? COLLATE NOCASE";
                 params.push(val(&filter.value));
                 clauses.push(format!("{} EXISTS ({inner})", if neg { "NOT" } else { "" }));
             }
@@ -113,22 +219,36 @@ pub fn compile(query: &Query) -> Compiled {
                 clauses.push(format!("{kw} ({inner})"));
             }
             Field::Ics => {
-                push_service_exists(&mut clauses, &mut params, neg, "ics_protocol = ? COLLATE NOCASE", val(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "ics_protocol = ? COLLATE NOCASE",
+                    val(&filter.value),
+                );
             }
             Field::HasIcs => {
                 let want = matches!(filter.value, FilterValue::Bool(true));
-                let inner = "SELECT 1 FROM services s WHERE s.ip = hosts.ip AND s.ics_protocol IS NOT NULL";
+                let inner =
+                    "SELECT 1 FROM services s WHERE s.ip = hosts.ip AND s.ics_protocol IS NOT NULL";
                 let kw = if want == !neg { "EXISTS" } else { "NOT EXISTS" };
                 clauses.push(format!("{kw} ({inner})"));
             }
             Field::Auth => {
-                push_service_exists(&mut clauses, &mut params, neg, "auth_state = ?", val(&filter.value));
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "auth_state = ?",
+                    val(&filter.value),
+                );
             }
             Field::HasExploit => {
                 // Exploit availability rides on an `exploit-available` tag emitted
                 // by the vuln crate when a CVE maps to a known public exploit.
                 let want = matches!(filter.value, FilterValue::Bool(true));
-                let inner = "SELECT 1 FROM tags t WHERE t.ip = hosts.ip AND t.name = 'exploit-available'";
+                let inner =
+                    "SELECT 1 FROM tags t WHERE t.ip = hosts.ip AND t.name = 'exploit-available'";
                 let kw = if want == !neg { "EXISTS" } else { "NOT EXISTS" };
                 clauses.push(format!("{kw} ({inner})"));
             }
@@ -143,7 +263,8 @@ pub fn compile(query: &Query) -> Compiled {
             .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
             .collect::<Vec<_>>()
             .join(" ");
-        clauses.push("hosts.ip IN (SELECT ip FROM banner_fts WHERE banner_fts MATCH ?)".to_string());
+        clauses
+            .push("hosts.ip IN (SELECT ip FROM banner_fts WHERE banner_fts MATCH ?)".to_string());
         params.push(Value::Text(fts));
     }
 
@@ -153,9 +274,7 @@ pub fn compile(query: &Query) -> Compiled {
         format!("WHERE {}", clauses.join(" AND "))
     };
 
-    let sql = format!(
-        "SELECT hosts.ip FROM hosts {where_sql} ORDER BY hosts.last_seen DESC"
-    );
+    let sql = format!("SELECT hosts.ip FROM hosts {where_sql} ORDER BY hosts.last_seen DESC");
 
     Compiled { sql, params }
 }
@@ -214,7 +333,10 @@ fn net_bounds(v: &FilterValue) -> Option<([u8; 16], [u8; 16])> {
         _ => return None,
     };
     if let Ok(net) = text.parse::<ipnet::IpNet>() {
-        return Some((crate::ip_sort_key(net.network()), crate::ip_sort_key(net.broadcast())));
+        return Some((
+            crate::ip_sort_key(net.network()),
+            crate::ip_sort_key(net.broadcast()),
+        ));
     }
     if let Ok(ip) = text.parse::<std::net::IpAddr>() {
         let k = crate::ip_sort_key(ip);

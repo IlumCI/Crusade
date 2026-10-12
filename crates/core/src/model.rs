@@ -110,6 +110,10 @@ pub struct Service {
     /// JARM active TLS fingerprint (62-char hex), for TLS services.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jarm: Option<String>,
+    /// Filename (under the data screenshots dir) of a captured screenshot of
+    /// this service's web UI, when screenshotting is enabled and succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot: Option<String>,
     /// Industrial control system / OT device identification, when the service
     /// speaks an ICS protocol (Modbus, S7, BACnet, DNP3, EtherNet/IP, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -151,6 +155,7 @@ impl Service {
             http: None,
             ssh: None,
             jarm: None,
+            screenshot: None,
             ics: None,
             auth: None,
             observed_at: OffsetDateTime::now_utc(),
@@ -280,7 +285,11 @@ pub struct Tag {
 
 impl Tag {
     pub fn simple(name: impl Into<String>) -> Self {
-        Tag { name: name.into(), cve: None, detail: None }
+        Tag {
+            name: name.into(),
+            cve: None,
+            detail: None,
+        }
     }
 }
 
@@ -289,10 +298,7 @@ mod opt_rfc3339 {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use time::OffsetDateTime;
 
-    pub fn serialize<S: Serializer>(
-        v: &Option<OffsetDateTime>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(v: &Option<OffsetDateTime>, s: S) -> Result<S::Ok, S::Error> {
         match v {
             Some(dt) => time::serde::rfc3339::serialize(dt, s),
             None => None::<String>.serialize(s),
@@ -304,12 +310,9 @@ mod opt_rfc3339 {
     ) -> Result<Option<OffsetDateTime>, D::Error> {
         let opt = Option::<String>::deserialize(d)?;
         match opt {
-            Some(s) => OffsetDateTime::parse(
-                &s,
-                &time::format_description::well_known::Rfc3339,
-            )
-            .map(Some)
-            .map_err(serde::de::Error::custom),
+            Some(s) => OffsetDateTime::parse(&s, &time::format_description::well_known::Rfc3339)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
             None => Ok(None),
         }
     }

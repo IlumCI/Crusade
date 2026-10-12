@@ -59,7 +59,11 @@ impl TcpScanner {
     /// [`ScanConfig::allow_private`]).
     pub fn new(config: ScanConfig, blocklist: Blocklist) -> Self {
         let limiter = RateLimiter::new(config.rate);
-        TcpScanner { config, blocklist, limiter }
+        TcpScanner {
+            config,
+            blocklist,
+            limiter,
+        }
     }
 
     /// The blocklist this scanner enforces.

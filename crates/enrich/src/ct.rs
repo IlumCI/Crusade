@@ -34,7 +34,11 @@ pub fn parse_crtsh_names(json: &str) -> anyhow::Result<Vec<String>> {
     let mut set: BTreeSet<String> = BTreeSet::new();
     for entry in entries {
         for raw in entry.name_value.split('\n') {
-            let name = raw.trim().trim_start_matches("*.").trim().to_ascii_lowercase();
+            let name = raw
+                .trim()
+                .trim_start_matches("*.")
+                .trim()
+                .to_ascii_lowercase();
             if !name.is_empty() {
                 set.insert(name);
             }
@@ -49,7 +53,13 @@ pub async fn crtsh_subdomains(domain: &str) -> anyhow::Result<Vec<String>> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("crusade-enrich/", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let body = client.get(&url).send().await?.error_for_status()?.text().await?;
+    let body = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
     parse_crtsh_names(&body)
 }
 

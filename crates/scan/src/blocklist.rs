@@ -95,7 +95,10 @@ impl Blocklist {
     /// Create an empty blocklist. The hard-coded reserved ranges are always in
     /// effect; `allow_private` lifts only the private/loopback group.
     pub fn new(allow_private: bool) -> Self {
-        Blocklist { user: Vec::new(), allow_private }
+        Blocklist {
+            user: Vec::new(),
+            allow_private,
+        }
     }
 
     /// True if `ip` must not be connected to. This is the single guardrail every
@@ -160,8 +163,9 @@ impl Blocklist {
             // Missing file == empty user list, by contract.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(bl),
             Err(e) => {
-                return Err(anyhow::Error::from(e)
-                    .context(format!("reading blocklist {}", path.display())));
+                return Err(
+                    anyhow::Error::from(e).context(format!("reading blocklist {}", path.display()))
+                );
             }
         };
         for (idx, raw) in text.lines().enumerate() {
@@ -170,7 +174,11 @@ impl Blocklist {
                 continue;
             }
             let net = parse_net_entry(line).with_context(|| {
-                format!("blocklist {}:{}: invalid entry {raw:?}", path.display(), idx + 1)
+                format!(
+                    "blocklist {}:{}: invalid entry {raw:?}",
+                    path.display(),
+                    idx + 1
+                )
             })?;
             bl.add(net);
         }
@@ -186,8 +194,7 @@ impl Blocklist {
             out.push_str(&net.to_string());
             out.push('\n');
         }
-        std::fs::write(path, out)
-            .with_context(|| format!("writing blocklist {}", path.display()))
+        std::fs::write(path, out).with_context(|| format!("writing blocklist {}", path.display()))
     }
 }
 

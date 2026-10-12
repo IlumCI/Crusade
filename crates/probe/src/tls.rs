@@ -239,6 +239,8 @@ mod tests {
         // fingerprint length/charset contract.
         let fp = fingerprint_der(&[0u8; 32]);
         assert_eq!(fp.len(), 64);
-        assert!(fp.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(fp
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
     }
 }

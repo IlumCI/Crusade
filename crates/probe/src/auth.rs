@@ -70,9 +70,10 @@ pub async fn posture_probe(ip: IpAddr, port: u16, timeout: Duration) -> Option<A
 ///
 /// Header keys in [`HttpInfo::headers`] are lowercase.
 pub fn classify_http_auth(http: &HttpInfo) -> AuthState {
-    let challenged = http.headers.iter().any(|(k, _)| {
-        k == "www-authenticate" || k == "proxy-authenticate"
-    });
+    let challenged = http
+        .headers
+        .iter()
+        .any(|(k, _)| k == "www-authenticate" || k == "proxy-authenticate");
     if challenged {
         return AuthState::Required;
     }
@@ -115,12 +116,7 @@ async fn read_once(stream: &mut TcpStream, timeout: Duration) -> Option<Vec<u8>>
 }
 
 /// Connect, write `payload`, and read a single reply chunk.
-async fn tcp_request(
-    ip: IpAddr,
-    port: u16,
-    payload: &[u8],
-    timeout: Duration,
-) -> Option<Vec<u8>> {
+async fn tcp_request(ip: IpAddr, port: u16, payload: &[u8], timeout: Duration) -> Option<Vec<u8>> {
     let mut stream = connect(ip, port, timeout).await?;
     tokio::time::timeout(timeout, stream.write_all(payload))
         .await
@@ -439,8 +435,14 @@ mod tests {
 
     #[test]
     fn http_401_is_required() {
-        assert_eq!(classify_http_auth(&http(Some(401), &[])), AuthState::Required);
-        assert_eq!(classify_http_auth(&http(Some(407), &[])), AuthState::Required);
+        assert_eq!(
+            classify_http_auth(&http(Some(401), &[])),
+            AuthState::Required
+        );
+        assert_eq!(
+            classify_http_auth(&http(Some(407), &[])),
+            AuthState::Required
+        );
     }
 
     #[test]
@@ -460,7 +462,10 @@ mod tests {
 
     #[test]
     fn http_other_is_unknown() {
-        assert_eq!(classify_http_auth(&http(Some(500), &[])), AuthState::Unknown);
+        assert_eq!(
+            classify_http_auth(&http(Some(500), &[])),
+            AuthState::Unknown
+        );
         assert_eq!(classify_http_auth(&http(None, &[])), AuthState::Unknown);
     }
 
@@ -556,9 +561,15 @@ mod tests {
     fn mongo_ismaster_request_is_well_formed() {
         let req = build_mongo_ismaster();
         // messageLength field equals the actual length.
-        assert_eq!(i32::from_le_bytes([req[0], req[1], req[2], req[3]]) as usize, req.len());
+        assert_eq!(
+            i32::from_le_bytes([req[0], req[1], req[2], req[3]]) as usize,
+            req.len()
+        );
         // opCode OP_QUERY at bytes 12..16.
-        assert_eq!(i32::from_le_bytes([req[12], req[13], req[14], req[15]]), 2004);
+        assert_eq!(
+            i32::from_le_bytes([req[12], req[13], req[14], req[15]]),
+            2004
+        );
         assert!(find_subslice(&req, b"admin.$cmd").is_some());
         assert!(find_subslice(&req, b"isMaster").is_some());
     }
@@ -585,7 +596,10 @@ mod tests {
 
     #[test]
     fn memcached_version_is_open() {
-        assert_eq!(classify_memcached_reply(b"VERSION 1.6.21\r\n"), AuthState::Open);
+        assert_eq!(
+            classify_memcached_reply(b"VERSION 1.6.21\r\n"),
+            AuthState::Open
+        );
     }
 
     #[test]
@@ -638,7 +652,10 @@ mod tests {
     fn vnc_malformed_is_unknown() {
         assert_eq!(classify_vnc_security(b""), AuthState::Unknown);
         assert_eq!(classify_vnc_security(b"RFB 003.008\n"), AuthState::Unknown);
-        assert_eq!(classify_vnc_security(b"NOTR 003.008\n\x01\x01"), AuthState::Unknown);
+        assert_eq!(
+            classify_vnc_security(b"NOTR 003.008\n\x01\x01"),
+            AuthState::Unknown
+        );
         // Count larger than the bytes present must not panic.
         let mut data = b"RFB 003.008\n".to_vec();
         data.push(0x05);

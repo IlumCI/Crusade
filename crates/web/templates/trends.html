@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Crusade — Trends{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 0.25rem">Trends</h1>
+<div class="count">{{ host_count }} host{% if host_count != 1 %}s{% endif %} in the index.</div>
+
+<h2 class="section-title">Recent alerts</h2>
+{% if alerts.is_empty() %}
+<div class="hint">No alerts recorded yet.</div>
+{% else %}
+<table class="facet">
+  <tr><th style="width:200px">Time</th><th style="width:160px">Kind</th><th style="width:140px">Host</th><th>Detail</th><th style="width:90px">Delivered</th></tr>
+  {% for a in alerts %}
+  <tr>
+    <td>{{ a.time }}</td>
+    <td>{{ a.kind }}</td>
+    <td><a href="/host/{{ a.ip }}">{{ a.ip }}</a></td>
+    <td>{{ a.detail }}</td>
+    <td>{% if a.delivered %}<span class="chip ok">&check;</span>{% else %}<span class="chip">pending</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2 class="section-title">Top ports</h2>
+<table class="facet">
+  <tr><th style="width:120px">Port</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in ports %}
+  <tr><td><a href="/?q=port:{{ f.value }}">{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / ports_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+
+<h2 class="section-title">Top products</h2>
+<table class="facet">
+  <tr><th style="width:220px">Product</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in products %}
+  <tr><td><a href="/?q=product:{{ f.value }}">{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / products_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+
+<h2 class="section-title">Top countries</h2>
+<table class="facet">
+  <tr><th style="width:120px">Country</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in countries %}
+  <tr><td><a href="/?q=country:{{ f.value }}">{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / countries_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+
+<h2 class="section-title">Top tags</h2>
+<table class="facet">
+  <tr><th style="width:220px">Tag</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in tags %}
+  <tr><td><a href="/?q=tag:{{ f.value }}">{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / tags_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

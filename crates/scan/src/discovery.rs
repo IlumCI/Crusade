@@ -44,7 +44,10 @@ impl Default for MasscanConfig {
     fn default() -> Self {
         // 1000 pps is gentle for masscan, whose own default is 100 but which is
         // routinely driven far higher; we stay low unless told otherwise.
-        MasscanConfig { rate: 1000, extra_args: Vec::new() }
+        MasscanConfig {
+            rate: 1000,
+            extra_args: Vec::new(),
+        }
     }
 }
 
@@ -61,7 +64,11 @@ pub async fn masscan_discover(
     bl: &Blocklist,
 ) -> anyhow::Result<Vec<(IpAddr, u16)>> {
     // (1) Pre-filter the targets: never even hand a blocked address to masscan.
-    let targets: Vec<IpAddr> = targets.iter().copied().filter(|ip| !bl.is_blocked(*ip)).collect();
+    let targets: Vec<IpAddr> = targets
+        .iter()
+        .copied()
+        .filter(|ip| !bl.is_blocked(*ip))
+        .collect();
     if targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -85,7 +92,14 @@ pub async fn masscan_discover(
         .tempfile()
         .context("creating masscan output file")?;
 
-    let args = build_masscan_args(&targets, ports, cfg.rate, out.path(), exclude.path(), &cfg.extra_args);
+    let args = build_masscan_args(
+        &targets,
+        ports,
+        cfg.rate,
+        out.path(),
+        exclude.path(),
+        &cfg.extra_args,
+    );
 
     // (3) Invoke masscan. A missing binary surfaces as a clear error, not a hang.
     let output = tokio::process::Command::new(MASSCAN_BIN)
@@ -136,7 +150,11 @@ fn build_masscan_args(
     exclude_path: &Path,
     extra: &[String],
 ) -> Vec<String> {
-    let ports_csv = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+    let ports_csv = ports
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
 
     let mut args: Vec<String> = vec![
         "-p".to_string(),
@@ -231,20 +249,31 @@ mod tests {
         );
 
         // Ports, as a single comma-joined -p value.
-        let p_idx = args.iter().position(|a| a == "-p").expect("-p flag present");
+        let p_idx = args
+            .iter()
+            .position(|a| a == "-p")
+            .expect("-p flag present");
         assert_eq!(args[p_idx + 1], "80,443,53");
 
         // Rate.
-        let r_idx = args.iter().position(|a| a == "--rate").expect("--rate flag present");
+        let r_idx = args
+            .iter()
+            .position(|a| a == "--rate")
+            .expect("--rate flag present");
         assert_eq!(args[r_idx + 1], "1500");
 
         // Output flags.
-        let o_idx = args.iter().position(|a| a == "-oJ").expect("-oJ flag present");
+        let o_idx = args
+            .iter()
+            .position(|a| a == "-oJ")
+            .expect("-oJ flag present");
         assert_eq!(args[o_idx + 1], out.to_string_lossy());
 
         // Excludefile.
-        let e_idx =
-            args.iter().position(|a| a == "--excludefile").expect("--excludefile flag present");
+        let e_idx = args
+            .iter()
+            .position(|a| a == "--excludefile")
+            .expect("--excludefile flag present");
         assert_eq!(args[e_idx + 1], excl.to_string_lossy());
 
         // Extra args are passed through.
@@ -256,7 +285,10 @@ mod tests {
         assert!(args.iter().any(|a| a == "1.1.1.1"));
         let last_flag = args.iter().rposition(|a| a.starts_with('-')).unwrap();
         let first_target = args.iter().position(|a| a == "8.8.8.8").unwrap();
-        assert!(first_target > last_flag, "targets must come after flags: {args:?}");
+        assert!(
+            first_target > last_flag,
+            "targets must come after flags: {args:?}"
+        );
     }
 
     #[tokio::test]
@@ -265,7 +297,9 @@ mod tests {
         // presence is irrelevant); the result is empty.
         let bl = Blocklist::new(false);
         let targets = vec![v4(127, 0, 0, 1), v4(10, 0, 0, 1), v4(192, 0, 2, 1)];
-        let got = masscan_discover(&targets, &[80], &MasscanConfig::default(), &bl).await.unwrap();
+        let got = masscan_discover(&targets, &[80], &MasscanConfig::default(), &bl)
+            .await
+            .unwrap();
         assert!(got.is_empty());
     }
 }

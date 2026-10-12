@@ -1,0 +1,18 @@
+# Crusade config for the docker-compose stack. DB + data live on the shared
+# named volume (/crusade/data) so the web service and workers share one queue
+# and index.
+[database]
+path = "data/crusade.db"
+
+[data]
+dir = "data"
+nmap_probes = "/usr/share/nmap/nmap-service-probes"
+
+[scan]
+blocklist_path = "/crusade/blocklist.txt"
+
+[web]
+bind = "0.0.0.0:8088"
+
+[alert]
+webhooks = []

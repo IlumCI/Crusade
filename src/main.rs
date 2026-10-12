@@ -13,7 +13,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
 use crusade_core::query;
-use crusade_scan::{expand_targets, filter_blocked, parse_masscan_json, parse_zmap_csv, Blocklist, ScanConfig, TcpScanner, RateLimiterParams};
+use crusade_scan::{
+    expand_targets, filter_blocked, parse_masscan_json, parse_zmap_csv, Blocklist,
+    RateLimiterParams, ScanConfig, TcpScanner,
+};
 use crusade_store::Store;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -21,7 +24,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Parser)]
-#[command(name = "crusade", version, about = "A self-hosted, keyless service search engine")]
+#[command(
+    name = "crusade",
+    version,
+    about = "A self-hosted, keyless service search engine"
+)]
 struct Cli {
     /// Path to the config file.
     #[arg(long, default_value = "crusade.toml", global = true)]
@@ -45,6 +52,9 @@ enum Command {
         /// Also probe common ICS/OT ports (Modbus, S7, EtherNet/IP, DNP3, BACnet).
         #[arg(long)]
         ics: bool,
+        /// Capture a screenshot of web services (needs a Chrome binary).
+        #[arg(long)]
+        screenshot: bool,
         /// Override the UDP ports (comma-separated); implies --udp.
         #[arg(long, value_delimiter = ',')]
         udp_ports: Option<Vec<u16>>,
@@ -132,6 +142,40 @@ enum Command {
         #[command(subcommand)]
         action: BlocklistAction,
     },
+    /// Add a scan job to the shared queue (for `crusade worker` to process).
+    Enqueue {
+        /// Target: an IP or CIDR. Repeatable, or use --file.
+        targets: Vec<String>,
+        /// Read targets (one per line) from a file.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        #[arg(long, value_delimiter = ',')]
+        ports: Option<Vec<u16>>,
+        #[arg(long)]
+        udp: bool,
+        #[arg(long)]
+        ics: bool,
+    },
+    /// Pull jobs from the queue and scan them. Run many for scale-out.
+    Worker {
+        /// Worker id recorded on claimed jobs (default: hostname-pid).
+        #[arg(long)]
+        id: Option<String>,
+        /// Process the queue until empty, then exit.
+        #[arg(long)]
+        once: bool,
+        /// Seconds to wait when the queue is empty before polling again.
+        #[arg(long, default_value_t = 10)]
+        poll: u64,
+        /// Permit private/loopback ranges (for your own rig).
+        #[arg(long)]
+        allow_private: bool,
+    },
+    /// Show scan-queue status (counts + recent jobs).
+    Jobs {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -167,25 +211,69 @@ async fn main() -> Result<()> {
     let cfg = Config::load(&cli.config).context("loading config")?;
 
     match cli.command {
-        Command::Scan { target, ports, udp, ics, udp_ports, discovery_masscan, masscan_rate, allow_private } => {
-            cmd_scan(&cfg, &target, ScanOpts { ports, udp, ics, udp_ports, discovery_masscan, masscan_rate, allow_private }).await
+        Command::Scan {
+            target,
+            ports,
+            udp,
+            ics,
+            screenshot,
+            udp_ports,
+            discovery_masscan,
+            masscan_rate,
+            allow_private,
+        } => {
+            cmd_scan(
+                &cfg,
+                &target,
+                ScanOpts {
+                    ports,
+                    udp,
+                    ics,
+                    screenshot,
+                    udp_ports,
+                    discovery_masscan,
+                    masscan_rate,
+                    allow_private,
+                },
+            )
+            .await
         }
         Command::Sweep { action } => match action {
-            SweepAction::Ingest { file, format, allow_private } => {
-                cmd_sweep_ingest(&cfg, &file, &format, allow_private).await
-            }
+            SweepAction::Ingest {
+                file,
+                format,
+                allow_private,
+            } => cmd_sweep_ingest(&cfg, &file, &format, allow_private).await,
         },
         Command::Search { query, limit, json } => cmd_search(&cfg, &query.join(" "), limit, json),
         Command::Host { ip, json } => cmd_host(&cfg, &ip, json),
         Command::Serve { bind } => cmd_serve(&cfg, bind).await,
         Command::UpdateData => update::update_data(&cfg).await,
-        Command::Monitor { interval, stale, batch, once, allow_private } => {
-            cmd_monitor(&cfg, interval, stale, batch, once, allow_private).await
-        }
+        Command::Monitor {
+            interval,
+            stale,
+            batch,
+            once,
+            allow_private,
+        } => cmd_monitor(&cfg, interval, stale, batch, once, allow_private).await,
         Command::Export { query, out } => cmd_export(&cfg, &query.join(" "), out),
         Command::Stats { query, top } => cmd_stats(&cfg, &query.join(" "), top),
         Command::Alerts { limit, test } => cmd_alerts(&cfg, limit, test).await,
         Command::Blocklist { action } => cmd_blocklist(&cfg, action),
+        Command::Enqueue {
+            targets,
+            file,
+            ports,
+            udp,
+            ics,
+        } => cmd_enqueue(&cfg, targets, file, ports, udp, ics),
+        Command::Worker {
+            id,
+            once,
+            poll,
+            allow_private,
+        } => cmd_worker(&cfg, id, once, poll, allow_private).await,
+        Command::Jobs { limit } => cmd_jobs(&cfg, limit),
     }
 }
 
@@ -212,6 +300,7 @@ struct ScanOpts {
     ports: Option<Vec<u16>>,
     udp: bool,
     ics: bool,
+    screenshot: bool,
     udp_ports: Option<Vec<u16>>,
     discovery_masscan: bool,
     masscan_rate: u32,
@@ -235,7 +324,10 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
 
     // TCP discovery: built-in connect scanner, or the masscan front-end.
     let open = if opts.discovery_masscan {
-        let mcfg = crusade_scan::MasscanConfig { rate: opts.masscan_rate, extra_args: vec![] };
+        let mcfg = crusade_scan::MasscanConfig {
+            rate: opts.masscan_rate,
+            extra_args: vec![],
+        };
         crusade_scan::masscan_discover(&targets, &tcp_ports, &mcfg, &bl)
             .await
             .context("masscan discovery")?
@@ -257,7 +349,11 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
     // UDP worklist (if --udp, explicit --udp-ports, or ICS UDP ports via --ics).
     let udp = if opts.udp || opts.udp_ports.is_some() || opts.ics {
         let mut uports = opts.udp_ports.unwrap_or_else(|| {
-            if opts.udp { crusade_scan::default_udp_ports() } else { Vec::new() }
+            if opts.udp {
+                crusade_scan::default_udp_ports()
+            } else {
+                Vec::new()
+            }
         });
         if opts.ics {
             uports.extend_from_slice(crusade_probe::ics_ports_udp());
@@ -273,13 +369,94 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
 
     let datasets = Arc::new(pipeline::Datasets::load(cfg)?);
     let mut store = Store::open(&cfg.database.path)?;
-    let hosts = pipeline::process(open, udp, datasets, cfg, &mut store).await?;
-    println!("Indexed {} host(s). Total in store: {}.", hosts.len(), store.host_count()?);
+    let hosts = pipeline::process(
+        open,
+        udp,
+        datasets,
+        cfg,
+        &mut store,
+        opts.screenshot || cfg.screenshot.enabled,
+    )
+    .await?;
+    println!(
+        "Indexed {} host(s). Total in store: {}.",
+        hosts.len(),
+        store.host_count()?
+    );
     Ok(())
 }
 
-async fn cmd_sweep_ingest(cfg: &Config, file: &PathBuf, format: &str, allow_private: bool) -> Result<()> {
-    let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+/// Scan one target with pre-loaded datasets/store. Shared by `scan` and the
+/// job `worker`. Returns the number of hosts indexed.
+async fn run_scan_once(
+    cfg: &Config,
+    target: &str,
+    opts: &ScanOpts,
+    datasets: Arc<pipeline::Datasets>,
+    store: &mut Store,
+) -> Result<usize> {
+    let bl = load_blocklist(cfg, opts.allow_private)?;
+    let targets = expand_targets(target, &bl)?;
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    let mut tcp_ports = opts
+        .ports
+        .clone()
+        .unwrap_or_else(|| cfg.scan.default_ports.clone());
+    if opts.ics {
+        tcp_ports.extend_from_slice(crusade_probe::ics_ports_tcp());
+        tcp_ports.sort_unstable();
+        tcp_ports.dedup();
+    }
+    let scan_cfg = ScanConfig {
+        ports: tcp_ports,
+        connect_timeout: cfg.connect_timeout(),
+        rate: RateLimiterParams {
+            conn_per_sec: cfg.scan.rate_per_sec,
+            burst: cfg.scan.rate_per_sec,
+            concurrency: cfg.scan.max_concurrent,
+        },
+        allow_private: opts.allow_private,
+    };
+    let open = TcpScanner::new(scan_cfg, bl.clone()).scan(&targets).await;
+
+    let udp = if opts.udp || opts.ics {
+        let mut uports = if opts.udp {
+            crusade_scan::default_udp_ports()
+        } else {
+            Vec::new()
+        };
+        if opts.ics {
+            uports.extend_from_slice(crusade_probe::ics_ports_udp());
+        }
+        uports.sort_unstable();
+        uports.dedup();
+        crusade_scan::udp_worklist(&targets, &uports, &bl)
+    } else {
+        Vec::new()
+    };
+
+    let hosts = pipeline::process(
+        open,
+        udp,
+        datasets,
+        cfg,
+        store,
+        opts.screenshot || cfg.screenshot.enabled,
+    )
+    .await?;
+    Ok(hosts.len())
+}
+
+async fn cmd_sweep_ingest(
+    cfg: &Config,
+    file: &PathBuf,
+    format: &str,
+    allow_private: bool,
+) -> Result<()> {
+    let text =
+        std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
     let pairs = match format {
         "masscan" => parse_masscan_json(&text),
         "zmap" => parse_zmap_csv(&text),
@@ -287,12 +464,27 @@ async fn cmd_sweep_ingest(cfg: &Config, file: &PathBuf, format: &str, allow_priv
     };
     let bl = load_blocklist(cfg, allow_private)?;
     let pairs = filter_blocked(pairs, &bl);
-    eprintln!("Ingested {} open port(s) after blocklist filtering; probing…", pairs.len());
+    eprintln!(
+        "Ingested {} open port(s) after blocklist filtering; probing…",
+        pairs.len()
+    );
 
     let datasets = Arc::new(pipeline::Datasets::load(cfg)?);
     let mut store = Store::open(&cfg.database.path)?;
-    let hosts = pipeline::process(pairs, Vec::new(), datasets, cfg, &mut store).await?;
-    println!("Indexed {} host(s). Total in store: {}.", hosts.len(), store.host_count()?);
+    let hosts = pipeline::process(
+        pairs,
+        Vec::new(),
+        datasets,
+        cfg,
+        &mut store,
+        cfg.screenshot.enabled,
+    )
+    .await?;
+    println!(
+        "Indexed {} host(s). Total in store: {}.",
+        hosts.len(),
+        store.host_count()?
+    );
     Ok(())
 }
 
@@ -313,7 +505,11 @@ fn cmd_search(cfg: &Config, raw: &str, limit: usize, json: bool) -> Result<()> {
                 "{:<16} [{}] {:<28} ports: {}",
                 h.ip.to_string(),
                 loc,
-                if products.is_empty() { "-".into() } else { products },
+                if products.is_empty() {
+                    "-".into()
+                } else {
+                    products
+                },
                 ports.join(",")
             );
             if !h.tags.is_empty() {
@@ -350,10 +546,19 @@ fn cmd_host(cfg: &Config, ip: &str, json: bool) -> Result<()> {
                 for s in &h.services {
                     let prod = s.product.as_deref().unwrap_or("-");
                     let ver = s.version.as_deref().unwrap_or("");
-                    println!("  :{:<6} {:<10} {} {}", s.port, s.service.as_deref().unwrap_or("?"), prod, ver);
+                    println!(
+                        "  :{:<6} {:<10} {} {}",
+                        s.port,
+                        s.service.as_deref().unwrap_or("?"),
+                        prod,
+                        ver
+                    );
                     if let Some(b) = &s.banner {
                         let first = b.lines().next().unwrap_or("");
-                        println!("          banner: {}", first.chars().take(100).collect::<String>());
+                        println!(
+                            "          banner: {}",
+                            first.chars().take(100).collect::<String>()
+                        );
                     }
                 }
                 if !h.tags.is_empty() {
@@ -378,8 +583,9 @@ async fn cmd_serve(cfg: &Config, bind: Option<String>) -> Result<()> {
         .context("invalid bind address")?;
     let store = Store::open(&cfg.database.path)?;
     let shared = Arc::new(Mutex::new(store));
+    let screens = cfg.data.dir.join("screens");
     println!("Crusade web UI on http://{addr}");
-    crusade_web::serve(addr, shared).await
+    crusade_web::serve_with(addr, shared, Some(screens)).await
 }
 
 async fn cmd_monitor(
@@ -431,7 +637,15 @@ async fn cmd_monitor(
             };
             let open = TcpScanner::new(scan_cfg, bl.clone()).scan(&[ip]).await;
             let mut store = Store::open(&cfg.database.path)?;
-            let hosts = pipeline::process(open, Vec::new(), datasets.clone(), cfg, &mut store).await?;
+            let hosts = pipeline::process(
+                open,
+                Vec::new(),
+                datasets.clone(),
+                cfg,
+                &mut store,
+                cfg.screenshot.enabled,
+            )
+            .await?;
             if let Some(after) = hosts.into_iter().next() {
                 record_changes(&store, before.as_ref(), &after)?;
             }
@@ -461,8 +675,9 @@ fn record_changes(
     use std::collections::BTreeSet;
     let ip = after.ip.to_string();
 
-    let old_ports: BTreeSet<u16> =
-        before.map(|h| h.services.iter().map(|s| s.port).collect()).unwrap_or_default();
+    let old_ports: BTreeSet<u16> = before
+        .map(|h| h.services.iter().map(|s| s.port).collect())
+        .unwrap_or_default();
     let new_ports: BTreeSet<u16> = after.services.iter().map(|s| s.port).collect();
     for p in new_ports.difference(&old_ports) {
         let detail = format!("new open port {p}");
@@ -548,7 +763,10 @@ fn cmd_stats(cfg: &Config, raw: &str, top: usize) -> Result<()> {
     let store = Store::open(&cfg.database.path)?;
     let total = store.count(&q)?;
     let facets = store.facets_for_query(&q, top)?;
-    println!("Stats for {:?} — {total} host(s)\n", if raw.is_empty() { "*" } else { raw });
+    println!(
+        "Stats for {:?} — {total} host(s)\n",
+        if raw.is_empty() { "*" } else { raw }
+    );
     print_facet("Top ports", &facets.ports);
     print_facet("Top products", &facets.products);
     print_facet("Top countries", &facets.countries);
@@ -568,6 +786,127 @@ fn print_facet(title: &str, rows: &[crusade_store::Facet]) {
     println!();
 }
 
+fn ports_csv(ports: &Option<Vec<u16>>) -> Option<String> {
+    ports.as_ref().map(|p| {
+        p.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    })
+}
+
+fn cmd_enqueue(
+    cfg: &Config,
+    mut targets: Vec<String>,
+    file: Option<PathBuf>,
+    ports: Option<Vec<u16>>,
+    udp: bool,
+    ics: bool,
+) -> Result<()> {
+    if let Some(path) = file {
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        targets.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(String::from),
+        );
+    }
+    if targets.is_empty() {
+        anyhow::bail!("no targets given (pass targets or --file)");
+    }
+    let csv = ports_csv(&ports);
+    let store = Store::open(&cfg.database.path)?;
+    let mut n = 0;
+    for t in targets {
+        store.enqueue_job(&t, csv.as_deref(), udp, ics)?;
+        n += 1;
+    }
+    println!("Enqueued {n} job(s).");
+    Ok(())
+}
+
+async fn cmd_worker(
+    cfg: &Config,
+    id: Option<String>,
+    once: bool,
+    poll: u64,
+    allow_private: bool,
+) -> Result<()> {
+    let worker_id = id.unwrap_or_else(|| {
+        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "worker".into());
+        format!("{host}-{}", std::process::id())
+    });
+    eprintln!("worker {worker_id} starting (poll {poll}s, once={once})…");
+    let datasets = Arc::new(pipeline::Datasets::load(cfg)?);
+    loop {
+        // Claim one job (own short-lived connection for the atomic claim).
+        let job = {
+            let mut store = Store::open(&cfg.database.path)?;
+            store.claim_next_job(&worker_id)?
+        };
+        let Some(job) = job else {
+            if once {
+                eprintln!("worker {worker_id}: queue empty, exiting.");
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(poll)).await;
+            continue;
+        };
+
+        let ports = job.ports.as_ref().map(|csv| {
+            csv.split(',')
+                .filter_map(|x| x.trim().parse::<u16>().ok())
+                .collect::<Vec<_>>()
+        });
+        let opts = ScanOpts {
+            ports,
+            udp: job.udp,
+            ics: job.ics,
+            screenshot: cfg.screenshot.enabled,
+            udp_ports: None,
+            discovery_masscan: false,
+            masscan_rate: 1000,
+            allow_private,
+        };
+        eprintln!("worker {worker_id}: job {} → {}", job.id, job.target);
+        let mut store = Store::open(&cfg.database.path)?;
+        match run_scan_once(cfg, &job.target, &opts, datasets.clone(), &mut store).await {
+            Ok(n) => {
+                store.finish_job(job.id, true, &format!("{n} host(s) indexed"))?;
+                println!("job {} done: {n} host(s)", job.id);
+            }
+            Err(e) => {
+                store.finish_job(job.id, false, &format!("{e}"))?;
+                eprintln!("job {} failed: {e}", job.id);
+            }
+        }
+    }
+}
+
+fn cmd_jobs(cfg: &Config, limit: usize) -> Result<()> {
+    let store = Store::open(&cfg.database.path)?;
+    let (p, r, d, f) = store.job_counts()?;
+    println!("Jobs — pending {p}, running {r}, done {d}, failed {f}\n");
+    for j in store.recent_jobs(limit)? {
+        let flags = format!(
+            "{}{}",
+            if j.udp { "u" } else { "-" },
+            if j.ics { "i" } else { "-" }
+        );
+        println!(
+            "#{:<5} {:<9} [{}] {:<22} {}",
+            j.id,
+            j.status,
+            flags,
+            j.target,
+            j.note.as_deref().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
 fn cmd_blocklist(cfg: &Config, action: BlocklistAction) -> Result<()> {
     let path = &cfg.scan.blocklist_path;
     match action {
@@ -576,14 +915,22 @@ fn cmd_blocklist(cfg: &Config, action: BlocklistAction) -> Result<()> {
                 .parse()
                 .or_else(|_| cidr.parse::<IpAddr>().map(|ip| ip.into()))
                 .with_context(|| format!("invalid CIDR/IP: {cidr}"))?;
-            let mut bl = if path.exists() { Blocklist::load(path)? } else { Blocklist::new(false) };
+            let mut bl = if path.exists() {
+                Blocklist::load(path)?
+            } else {
+                Blocklist::new(false)
+            };
             bl.add(net);
             bl.save(path)?;
             println!("Added {net} to {}.", path.display());
             Ok(())
         }
         BlocklistAction::List => {
-            let bl = if path.exists() { Blocklist::load(path)? } else { Blocklist::new(false) };
+            let bl = if path.exists() {
+                Blocklist::load(path)?
+            } else {
+                Blocklist::new(false)
+            };
             if bl.user_ranges().is_empty() {
                 println!("(no user entries; built-in reserved/private ranges are always blocked)");
             } else {

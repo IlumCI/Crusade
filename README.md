@@ -54,6 +54,9 @@ crusade scan 10.0.0.0/16 --discovery-masscan      # masscan front-end (blocklist
 crusade stats 'product:nginx'                     # faceted breakdown for a query
 crusade export 'country:DE' --out de.jsonl        # JSON Lines, like `shodan download`
 crusade monitor --interval 3600 --stale 86400     # rescan + alert on new ports/CVEs
+crusade alerts                                    # recent alerts (webhook/SMTP via [alert])
+crusade enqueue 10.0.0.0/24 --ics && crusade worker   # distributed scan queue
+crusade scan 198.51.100.0/24 --screenshot         # capture web-UI screenshots (needs Chrome)
 ```
 
 Each probed service can carry a JARM fingerprint, favicon mmh3 hash, TLS

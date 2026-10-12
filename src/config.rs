@@ -13,6 +13,7 @@ pub struct Config {
     pub web: Web,
     pub data: Data,
     pub alert: Alert,
+    pub screenshot: Screenshot,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,7 +74,9 @@ impl Config {
 
 impl Default for Database {
     fn default() -> Self {
-        Database { path: "crusade.db".into() }
+        Database {
+            path: "crusade.db".into(),
+        }
     }
 }
 impl Default for Scan {
@@ -82,7 +85,10 @@ impl Default for Scan {
             connect_timeout_ms: 3000,
             max_concurrent: 50,
             rate_per_sec: 100.0,
-            default_ports: vec![21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 9200, 27017],
+            default_ports: vec![
+                21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443,
+                9200, 27017,
+            ],
             allow_private: false,
             blocklist_path: "blocklist.txt".into(),
         }
@@ -101,13 +107,27 @@ impl Default for Sweep {
 }
 impl Default for Web {
     fn default() -> Self {
-        Web { bind: "127.0.0.1:8088".into() }
+        Web {
+            bind: "127.0.0.1:8088".into(),
+        }
     }
 }
 impl Default for Data {
     fn default() -> Self {
-        Data { dir: "data".into(), nmap_probes: "/usr/share/nmap/nmap-service-probes".into() }
+        Data {
+            dir: "data".into(),
+            nmap_probes: "/usr/share/nmap/nmap-service-probes".into(),
+        }
     }
+}
+
+/// Headless-Chrome screenshots of web services. Off by default; needs a Chrome
+/// binary (auto-detected on PATH, or set `chrome_path`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Screenshot {
+    pub enabled: bool,
+    pub chrome_path: Option<String>,
 }
 
 /// Alert transports used by `crusade monitor`. All optional; empty = log only.

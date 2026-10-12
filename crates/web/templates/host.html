@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Crusade — {{ ip }}{% endblock %}
 {% block content %}
-<p><a href="/">&larr; Back to search</a></p>
+<p><a href="/">&larr; Back to search</a> · <a href="/host/{{ ip }}/history">History</a></p>
 <h1 style="margin:0 0 0.5rem">{{ ip }}</h1>
 
 <div class="info-grid">
@@ -97,6 +97,11 @@
     </div>
     {% endif %}
   </div>
+  {% endif %}
+
+  {% if let Some(shot) = s.screenshot %}
+  <div class="kv" style="margin-top:0.4rem">Screenshot</div>
+  <a href="/screens/{{ shot }}"><img class="shot" src="/screens/{{ shot }}" alt="Screenshot of {{ ip }}:{{ s.port }}" loading="lazy"></a>
   {% endif %}
 
   {% if let Some(banner) = s.banner %}
