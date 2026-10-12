@@ -5,7 +5,7 @@
   <input type="text" name="q" value="{{ q }}" placeholder="port:443 country:DE product:nginx &quot;default page&quot;" autofocus>
   <button type="submit">Search</button>
 </form>
-<div class="hint">Filters: port:, country:, city:, asn:, org:, product:, version:, hostname:, ssl.cn:, net:, transport:, tag:, jarm:, http.favicon.hash:, ssh.hostkey:, hassh:, vuln:, has_vuln:, has_screenshot:, before:, after: — bare words match banners. Prefix a filter with - to negate.</div>
+<div class="hint">Filters: port:, country:, city:, asn:, org:, product:, version:, hostname:, ssl.cn:, net:, transport:, tag:, jarm:, http.favicon.hash:, ssh.hostkey:, hassh:, vuln:, has_vuln:, ics:, has_ics:, has_screenshot:, before:, after: — bare words match banners. Prefix a filter with - to negate.</div>
 
 {% if let Some(err) = error %}
 <div class="error">Could not parse query: {{ err }}</div>

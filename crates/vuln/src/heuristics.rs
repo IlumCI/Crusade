@@ -63,6 +63,22 @@ pub fn heuristic_tags(host: &Host) -> Vec<Tag> {
         if is_plaintext_http(svc) && svc.tls.is_none() {
             http_no_tls = true;
         }
+
+        // An ICS/OT device reachable on the public internet is noteworthy in
+        // its own right — surface it with a protocol-specific tag.
+        if let Some(ics) = &svc.ics {
+            let detail = [ics.vendor.as_deref(), ics.product.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ");
+            tags.push(Tag {
+                name: "ics-exposed".to_string(),
+                cve: None,
+                detail: (!detail.is_empty()).then_some(detail),
+            });
+            tags.push(Tag::simple(format!("ics-{}", ics.protocol)));
+        }
     }
 
     if self_signed {

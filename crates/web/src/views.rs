@@ -174,7 +174,34 @@ pub struct ServiceView {
     /// Favicon hash (from `http`) hoisted up with a pivot URL for the template.
     pub favicon_hash: Option<i32>,
     pub favicon_url: Option<String>,
+    /// ICS/OT device identification, with a `/?q=ics:<proto>` pivot.
+    pub ics: Option<IcsView>,
     pub observed_at: String,
+}
+
+/// ICS/OT device identification as shown on the host-detail page.
+pub struct IcsView {
+    pub protocol: String,
+    pub protocol_url: String,
+    pub vendor: Option<String>,
+    pub product: Option<String>,
+    pub version: Option<String>,
+    pub device_id: Option<String>,
+    pub extra: Vec<(String, String)>,
+}
+
+impl From<&crusade_core::IcsInfo> for IcsView {
+    fn from(i: &crusade_core::IcsInfo) -> Self {
+        IcsView {
+            protocol: i.protocol.clone(),
+            protocol_url: pivot("ics", &i.protocol),
+            vendor: i.vendor.clone(),
+            product: i.product.clone(),
+            version: i.version.clone(),
+            device_id: i.device_id.clone(),
+            extra: i.extra.clone(),
+        }
+    }
 }
 
 impl From<&Service> for ServiceView {
@@ -199,6 +226,7 @@ impl From<&Service> for ServiceView {
             jarm_url: s.jarm.as_deref().map(|j| pivot("jarm", j)),
             favicon_hash,
             favicon_url: favicon_hash.map(|v| pivot("http.favicon.hash", &v.to_string())),
+            ics: s.ics.as_ref().map(IcsView::from),
             observed_at: fmt_time(s.observed_at),
         }
     }

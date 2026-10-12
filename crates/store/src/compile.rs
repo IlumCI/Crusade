@@ -112,6 +112,15 @@ pub fn compile(query: &Query) -> Compiled {
                 let kw = if want == !neg { "EXISTS" } else { "NOT EXISTS" };
                 clauses.push(format!("{kw} ({inner})"));
             }
+            Field::Ics => {
+                push_service_exists(&mut clauses, &mut params, neg, "ics_protocol = ? COLLATE NOCASE", val(&filter.value));
+            }
+            Field::HasIcs => {
+                let want = matches!(filter.value, FilterValue::Bool(true));
+                let inner = "SELECT 1 FROM services s WHERE s.ip = hosts.ip AND s.ics_protocol IS NOT NULL";
+                let kw = if want == !neg { "EXISTS" } else { "NOT EXISTS" };
+                clauses.push(format!("{kw} ({inner})"));
+            }
         }
     }
 
@@ -277,6 +286,15 @@ mod tests {
     fn has_vuln_negation() {
         let c = compile(&parse("-has_vuln:true").unwrap());
         assert!(c.sql.contains("NOT EXISTS"));
+    }
+
+    #[test]
+    fn ics_filter_and_has_ics() {
+        let c = compile(&parse("ics:modbus").unwrap());
+        assert!(c.sql.contains("ics_protocol = ?"));
+        let c = compile(&parse("has_ics:true").unwrap());
+        assert!(c.sql.contains("ics_protocol IS NOT NULL"));
+        assert!(c.sql.contains("EXISTS"));
     }
 
     #[test]

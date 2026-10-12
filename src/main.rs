@@ -41,6 +41,9 @@ enum Command {
         /// Also run read-only UDP protocol probes.
         #[arg(long)]
         udp: bool,
+        /// Also probe common ICS/OT ports (Modbus, S7, EtherNet/IP, DNP3, BACnet).
+        #[arg(long)]
+        ics: bool,
         /// Override the UDP ports (comma-separated); implies --udp.
         #[arg(long, value_delimiter = ',')]
         udp_ports: Option<Vec<u16>>,
@@ -155,8 +158,8 @@ async fn main() -> Result<()> {
     let cfg = Config::load(&cli.config).context("loading config")?;
 
     match cli.command {
-        Command::Scan { target, ports, udp, udp_ports, discovery_masscan, masscan_rate, allow_private } => {
-            cmd_scan(&cfg, &target, ScanOpts { ports, udp, udp_ports, discovery_masscan, masscan_rate, allow_private }).await
+        Command::Scan { target, ports, udp, ics, udp_ports, discovery_masscan, masscan_rate, allow_private } => {
+            cmd_scan(&cfg, &target, ScanOpts { ports, udp, ics, udp_ports, discovery_masscan, masscan_rate, allow_private }).await
         }
         Command::Sweep { action } => match action {
             SweepAction::Ingest { file, format, allow_private } => {
@@ -198,6 +201,7 @@ fn load_blocklist(cfg: &Config, allow_private: bool) -> Result<Blocklist> {
 struct ScanOpts {
     ports: Option<Vec<u16>>,
     udp: bool,
+    ics: bool,
     udp_ports: Option<Vec<u16>>,
     discovery_masscan: bool,
     masscan_rate: u32,
@@ -211,7 +215,12 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
         println!("No scannable addresses (all blocked/reserved, or empty target).");
         return Ok(());
     }
-    let tcp_ports = opts.ports.unwrap_or_else(|| cfg.scan.default_ports.clone());
+    let mut tcp_ports = opts.ports.unwrap_or_else(|| cfg.scan.default_ports.clone());
+    if opts.ics {
+        tcp_ports.extend_from_slice(crusade_probe::ics_ports_tcp());
+        tcp_ports.sort_unstable();
+        tcp_ports.dedup();
+    }
     eprintln!("Scanning {} address(es)…", targets.len());
 
     // TCP discovery: built-in connect scanner, or the masscan front-end.
@@ -235,9 +244,16 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
     };
     eprintln!("Found {} open TCP port(s); probing…", open.len());
 
-    // UDP worklist (only if requested).
-    let udp = if opts.udp || opts.udp_ports.is_some() {
-        let uports = opts.udp_ports.unwrap_or_else(crusade_scan::default_udp_ports);
+    // UDP worklist (if --udp, explicit --udp-ports, or ICS UDP ports via --ics).
+    let udp = if opts.udp || opts.udp_ports.is_some() || opts.ics {
+        let mut uports = opts.udp_ports.unwrap_or_else(|| {
+            if opts.udp { crusade_scan::default_udp_ports() } else { Vec::new() }
+        });
+        if opts.ics {
+            uports.extend_from_slice(crusade_probe::ics_ports_udp());
+        }
+        uports.sort_unstable();
+        uports.dedup();
         let wl = crusade_scan::udp_worklist(&targets, &uports, &bl);
         eprintln!("Probing {} UDP (ip,port) pair(s)…", wl.len());
         wl

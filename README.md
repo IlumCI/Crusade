@@ -79,7 +79,7 @@ language.
 
 Filters: `port asn org country city net product version hostname ssl.cn
 transport jarm http.favicon.hash ssh.hostkey hassh tag vuln has_vuln
-has_screenshot before after`; a leading `-` negates; bare/quoted words are
+ics has_ics has_screenshot before after`; a leading `-` negates; bare/quoted words are
 full-text over banners, titles, technologies and SSH banners. Unknown keys fall
 back to free text. `net:` accepts IPv4/IPv6 CIDRs; `http.favicon.hash:` takes
 the signed mmh3 integer (the Shodan convention) for finding the same deployment.

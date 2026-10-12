@@ -110,6 +110,10 @@ pub struct Service {
     /// JARM active TLS fingerprint (62-char hex), for TLS services.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jarm: Option<String>,
+    /// Industrial control system / OT device identification, when the service
+    /// speaks an ICS protocol (Modbus, S7, BACnet, DNP3, EtherNet/IP, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ics: Option<IcsInfo>,
     #[serde(with = "time::serde::rfc3339")]
     pub observed_at: OffsetDateTime,
 }
@@ -128,6 +132,7 @@ impl Service {
             http: None,
             ssh: None,
             jarm: None,
+            ics: None,
             observed_at: OffsetDateTime::now_utc(),
         }
     }
@@ -202,6 +207,44 @@ pub struct SshInfo {
     /// HASSH fingerprint (md5 over the client/server KEX fields).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hassh: Option<String>,
+}
+
+/// Industrial-control-system / OT device identification.
+///
+/// Populated by read-only identification requests to a device speaking an ICS
+/// protocol (e.g. Modbus function 43/14 "Read Device Identification", S7comm
+/// SZL read, EtherNet/IP ListIdentity, BACnet ReadProperty, DNP3). We only ask
+/// for the device's own self-description — never write coils/registers or issue
+/// control commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IcsInfo {
+    /// Protocol spoken: "modbus", "s7", "bacnet", "dnp3", "ethernetip", …
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Device/module name or serial, when the protocol exposes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// Any further protocol-specific attributes (label, value).
+    #[serde(default)]
+    pub extra: Vec<(String, String)>,
+}
+
+impl IcsInfo {
+    pub fn new(protocol: impl Into<String>) -> Self {
+        IcsInfo {
+            protocol: protocol.into(),
+            vendor: None,
+            product: None,
+            version: None,
+            device_id: None,
+            extra: Vec::new(),
+        }
+    }
 }
 
 /// A derived label attached to a host or service.

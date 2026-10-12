@@ -6,5 +6,5 @@
 pub mod model;
 pub mod query;
 
-pub use model::{Host, HttpInfo, Service, SshInfo, Tag, TlsCert, Transport};
+pub use model::{Host, HttpInfo, IcsInfo, Service, SshInfo, Tag, TlsCert, Transport};
 pub use query::{parse, Field, Filter, FilterValue, ParseError, Query};

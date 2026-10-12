@@ -105,3 +105,30 @@ fn tls_cn_is_searchable() {
     let r = store.search(&parse("ssl.cn:secure.example.com").unwrap(), 10, 0).unwrap();
     assert_eq!(r.len(), 1);
 }
+
+#[test]
+fn ics_service_is_stored_and_searchable() {
+    use crusade_core::model::IcsInfo;
+    let mut store = Store::open_in_memory().unwrap();
+    let mut h = Host::new("192.0.2.77".parse().unwrap());
+    h.last_seen = OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap();
+    let mut s = Service::new(502, Transport::Tcp);
+    s.service = Some("modbus".into());
+    let mut ics = IcsInfo::new("modbus");
+    ics.vendor = Some("Schneider Electric".into());
+    ics.product = Some("BMXP34".into());
+    s.ics = Some(ics);
+    s.observed_at = h.last_seen;
+    h.services.push(s);
+    store.upsert_host(&h).unwrap();
+
+    // ics: protocol filter
+    let r = store.search(&parse("ics:modbus").unwrap(), 10, 0).unwrap();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].services[0].ics.as_ref().unwrap().vendor.as_deref(), Some("Schneider Electric"));
+    // has_ics boolean
+    assert_eq!(store.search(&parse("has_ics:true").unwrap(), 10, 0).unwrap().len(), 1);
+    assert_eq!(store.search(&parse("has_ics:false").unwrap(), 10, 0).unwrap().len(), 0);
+    // vendor is full-text searchable
+    assert_eq!(store.search(&parse("Schneider").unwrap(), 10, 0).unwrap().len(), 1);
+}

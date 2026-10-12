@@ -84,6 +84,21 @@
   </div>
   {% endif %}
 
+  {% if let Some(ics) = s.ics %}
+  <div class="kv" style="margin-top:0.4rem">
+    ICS/OT · <a href="{{ ics.protocol_url }}"><b>{{ ics.protocol }}</b></a>
+    {% if let Some(v) = ics.vendor %}<br>vendor: {{ v }}{% endif %}
+    {% if let Some(p) = ics.product %}<br>product: {{ p }}{% endif %}
+    {% if let Some(ver) = ics.version %}<br>version: {{ ver }}{% endif %}
+    {% if let Some(d) = ics.device_id %}<br>device: {{ d }}{% endif %}
+    {% if !ics.extra.is_empty() %}
+    <div class="badges" style="margin-top:0.35rem">
+      {% for kv in ics.extra %}<span class="chip">{{ kv.0 }}: {{ kv.1 }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {% if let Some(banner) = s.banner %}
   <pre class="banner">{{ banner }}</pre>
   {% endif %}

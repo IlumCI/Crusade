@@ -27,6 +27,7 @@
 pub mod fingerprint;
 pub mod grab;
 pub mod http;
+pub mod ics;
 pub mod jarm;
 pub mod ssh;
 pub mod tls;
@@ -40,6 +41,7 @@ use time::OffsetDateTime;
 use crusade_core::{HttpInfo, Service, Transport};
 
 pub use fingerprint::{Fingerprints, ProbeKind, ServiceMatch};
+pub use ics::{ics_ports_tcp, ics_ports_udp, probe_ics_service};
 pub use jarm::jarm;
 pub use ssh::ssh_info;
 pub use udp::probe_udp_service;
@@ -151,6 +153,25 @@ pub async fn probe_service(
             svc.ssh = Some(ssh);
             if svc.service.is_none() {
                 svc.service = Some("ssh".to_string());
+            }
+        }
+    }
+
+    // 6. ICS/OT device identification (read-only) for known TCP ICS ports.
+    //    Attempted after the normal banner/fingerprint so it only enriches.
+    if ics::ics_ports_tcp().contains(&port) {
+        if let Some(ics_svc) = ics::probe_ics_service(ip, port, cfg.timeout).await {
+            if ics_svc.ics.is_some() {
+                svc.ics = ics_svc.ics;
+            }
+            if svc.service.is_none() {
+                svc.service = ics_svc.service;
+            }
+            if svc.product.is_none() {
+                svc.product = ics_svc.product;
+            }
+            if svc.version.is_none() {
+                svc.version = ics_svc.version;
             }
         }
     }

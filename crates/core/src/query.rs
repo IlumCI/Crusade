@@ -63,6 +63,10 @@ pub enum Field {
     Vuln,
     /// `has_vuln:` — whether the host carries any CVE tag.
     HasVuln,
+    /// `ics:` — an ICS/OT protocol a service speaks (modbus, s7, bacnet, …).
+    Ics,
+    /// `has_ics:` — whether the host exposes any ICS/OT service.
+    HasIcs,
 }
 
 impl Field {
@@ -89,6 +93,8 @@ impl Field {
             "hassh" | "ssh.hassh" => Field::Hassh,
             "vuln" | "cve" => Field::Vuln,
             "has_vuln" => Field::HasVuln,
+            "ics" | "ics.protocol" => Field::Ics,
+            "has_ics" => Field::HasIcs,
             _ => return None,
         })
     }
@@ -116,6 +122,8 @@ impl Field {
             Field::Hassh => "hassh",
             Field::Vuln => "vuln",
             Field::HasVuln => "has_vuln",
+            Field::Ics => "ics",
+            Field::HasIcs => "has_ics",
         }
     }
 }
@@ -233,7 +241,7 @@ fn parse_value(field: Field, raw: &str) -> Result<FilterValue, ParseError> {
             .parse::<i64>()
             .map(FilterValue::Int)
             .map_err(|_| ParseError::BadNumber { field: field.as_str(), value: raw.to_string() }),
-        Field::HasScreenshot | Field::HasVuln => match raw.to_ascii_lowercase().as_str() {
+        Field::HasScreenshot | Field::HasVuln | Field::HasIcs => match raw.to_ascii_lowercase().as_str() {
             "true" | "1" | "yes" => Ok(FilterValue::Bool(true)),
             "false" | "0" | "no" => Ok(FilterValue::Bool(false)),
             _ => Err(ParseError::BadBool { field: field.as_str(), value: raw.to_string() }),
@@ -443,6 +451,13 @@ mod tests {
         assert_eq!(f(&q, Field::Jarm).value, FilterValue::Text("abcd".into()));
         assert_eq!(f(&q, Field::Hassh).value, FilterValue::Text("deadbeef".into()));
         assert_eq!(f(&q, Field::SshHostkey).value, FilterValue::Text("SHA256:xyz".into()));
+    }
+
+    #[test]
+    fn v3_ics_filters() {
+        let q = parse("ics:modbus has_ics:true").unwrap();
+        assert_eq!(f(&q, Field::Ics).value, FilterValue::Text("modbus".into()));
+        assert_eq!(f(&q, Field::HasIcs).value, FilterValue::Bool(true));
     }
 
     #[test]

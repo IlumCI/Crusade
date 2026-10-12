@@ -34,12 +34,19 @@ pub async fn probe_udp_service(ip: IpAddr, port: u16, timeout: Duration) -> Opti
         137 => probe_netbios(ip, port, timeout).await,
         161 => probe_snmp(ip, port, timeout).await,
         1900 => probe_ssdp(ip, port, timeout).await,
+        // UDP ICS/OT identification (BACnet/IP, EtherNet/IP over UDP).
+        _ if crate::ics::ics_ports_udp().contains(&port) => {
+            crate::ics::probe_ics_service(ip, port, timeout).await
+        }
         _ => None,
     }
 }
 
 /// Send `payload` to `ip:port` over UDP and read a single reply.
-async fn udp_roundtrip(
+///
+/// Shared with the ICS probes, which reuse this connectionless round-trip for
+/// BACnet/IP and EtherNet/IP over UDP.
+pub(crate) async fn udp_roundtrip(
     ip: IpAddr,
     port: u16,
     payload: &[u8],

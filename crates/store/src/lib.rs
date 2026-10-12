@@ -101,16 +101,17 @@ impl Store {
                 None => (None, None),
             };
             let favicon = svc.http.as_ref().and_then(|h| h.favicon_hash);
+            let ics_protocol = svc.ics.as_ref().map(|i| i.protocol.clone());
             tx.execute(
                 "INSERT INTO services
                    (ip, port, transport, service, product, version, cpe, ssl_cn,
-                    jarm, favicon_hash, ssh_hostkey, hassh, tls_version,
+                    jarm, favicon_hash, ssh_hostkey, hassh, tls_version, ics_protocol,
                     has_screenshot, observed_at, banner)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
                 params![
                     ip, svc.port, transport, svc.service, svc.product, svc.version,
                     svc.cpe, ssl_cn, svc.jarm, favicon, ssh_hostkey, hassh, tls_version,
-                    has_shot, svc.observed_at.unix_timestamp(), svc.banner
+                    ics_protocol, has_shot, svc.observed_at.unix_timestamp(), svc.banner
                 ],
             )?;
             tx.execute(
@@ -144,6 +145,12 @@ impl Store {
             if let Some(ssh) = &svc.ssh {
                 if let Some(b) = &ssh.banner {
                     fts_body.push_str(b);
+                    fts_body.push('\n');
+                }
+            }
+            if let Some(ics) = &svc.ics {
+                for field in [&ics.vendor, &ics.product, &ics.device_id].into_iter().flatten() {
+                    fts_body.push_str(field);
                     fts_body.push('\n');
                 }
             }

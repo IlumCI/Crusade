@@ -30,7 +30,14 @@ The iconic Shodan pivots + the other half of coverage (UDP) + operations.
   `crusade stats <query>`, and `crusade monitor` — a rescan scheduler that diffs
   against stored state and alerts on new ports/vulns (Shodan-Monitor-lite).
 
+## v3 — IN PROGRESS
+- **ICS/OT protocols — DONE**: read-only device identification for Modbus,
+  Siemens S7, EtherNet/IP, BACnet (fully parsed) and DNP3 (confirm-only);
+  `ics:`/`has_ics:` filters, `ics-exposed`/`ics-<proto>` tags, `--ics` scan
+  flag, and a host-detail ICS panel. Strictly identification reads — never
+  writes coils/registers or issues control commands.
+
 ## v3 — LATER
-Screenshots (RDP/VNC/HTTP, the deferred seam), ICS/OT protocols (Modbus/S7/
-BACnet/DNP3), exploit cross-ref (Exploit-DB/Metasploit), distributed workers,
-trends-over-time views, alert transports (webhook/email).
+Screenshots (RDP/VNC/HTTP, the deferred seam in enrich), exploit cross-ref
+(Exploit-DB/Metasploit), distributed workers, trends-over-time views, alert
+transports (webhook/email).
