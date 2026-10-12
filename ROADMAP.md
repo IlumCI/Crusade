@@ -36,8 +36,17 @@ The iconic Shodan pivots + the other half of coverage (UDP) + operations.
   `ics:`/`has_ics:` filters, `ics-exposed`/`ics-<proto>` tags, `--ics` scan
   flag, and a host-detail ICS panel. Strictly identification reads — never
   writes coils/registers or issues control commands.
+- **Auth posture — DONE**: per-service `AuthState` (open / required / unknown)
+  observed from the service's own response (HTTP 401·WWW-Authenticate, Redis
+  -NOAUTH, Mongo/Memcached/Elasticsearch handshakes, VNC security types, ICS =
+  no auth). `auth:` filter, `unauthenticated-access`/`unauth-<kind>` tags, web
+  badges. Observe-only — never submits credentials or authenticates.
+- **Exploit cross-ref — DONE**: CVE → public-exploit mapping from Exploit-DB
+  (`files_exploits.csv`) and Metasploit (`modules_metadata_base.json`), both
+  pulled by `update-data`. Emits `exploit-available` tags (cve + EDB/msf refs);
+  `has_exploit:` filter; web highlighting. Records only that an exploit EXISTS —
+  never downloads, runs, or verifies one.
 
 ## v3 — LATER
-Screenshots (RDP/VNC/HTTP, the deferred seam in enrich), exploit cross-ref
-(Exploit-DB/Metasploit), distributed workers, trends-over-time views, alert
-transports (webhook/email).
+Screenshots (RDP/VNC/HTTP, the deferred seam in enrich), distributed workers,
+trends-over-time views, alert transports (webhook/email).

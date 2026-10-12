@@ -67,6 +67,10 @@ pub enum Field {
     Ics,
     /// `has_ics:` — whether the host exposes any ICS/OT service.
     HasIcs,
+    /// `auth:` — a service's observed auth posture (open | required | unknown).
+    Auth,
+    /// `has_exploit:` — whether any attached CVE has a known public exploit.
+    HasExploit,
 }
 
 impl Field {
@@ -95,6 +99,8 @@ impl Field {
             "has_vuln" => Field::HasVuln,
             "ics" | "ics.protocol" => Field::Ics,
             "has_ics" => Field::HasIcs,
+            "auth" => Field::Auth,
+            "has_exploit" | "exploit" => Field::HasExploit,
             _ => return None,
         })
     }
@@ -124,6 +130,8 @@ impl Field {
             Field::HasVuln => "has_vuln",
             Field::Ics => "ics",
             Field::HasIcs => "has_ics",
+            Field::Auth => "auth",
+            Field::HasExploit => "has_exploit",
         }
     }
 }
@@ -241,10 +249,16 @@ fn parse_value(field: Field, raw: &str) -> Result<FilterValue, ParseError> {
             .parse::<i64>()
             .map(FilterValue::Int)
             .map_err(|_| ParseError::BadNumber { field: field.as_str(), value: raw.to_string() }),
-        Field::HasScreenshot | Field::HasVuln | Field::HasIcs => match raw.to_ascii_lowercase().as_str() {
+        Field::HasScreenshot | Field::HasVuln | Field::HasIcs | Field::HasExploit => match raw.to_ascii_lowercase().as_str() {
             "true" | "1" | "yes" => Ok(FilterValue::Bool(true)),
             "false" | "0" | "no" => Ok(FilterValue::Bool(false)),
             _ => Err(ParseError::BadBool { field: field.as_str(), value: raw.to_string() }),
+        },
+        Field::Auth => match raw.to_ascii_lowercase().as_str() {
+            "open" | "none" | "unauth" | "unauthenticated" | "no" => Ok(FilterValue::Text("open".into())),
+            "required" | "auth" | "authenticated" | "yes" => Ok(FilterValue::Text("required".into())),
+            "unknown" => Ok(FilterValue::Text("unknown".into())),
+            _ => Err(ParseError::BadEnum { field: field.as_str(), value: raw.to_string(), allowed: "open, required, unknown" }),
         },
         Field::Transport => match raw.to_ascii_lowercase().as_str() {
             "tcp" => Ok(FilterValue::Text("tcp".into())),
@@ -451,6 +465,23 @@ mod tests {
         assert_eq!(f(&q, Field::Jarm).value, FilterValue::Text("abcd".into()));
         assert_eq!(f(&q, Field::Hassh).value, FilterValue::Text("deadbeef".into()));
         assert_eq!(f(&q, Field::SshHostkey).value, FilterValue::Text("SHA256:xyz".into()));
+    }
+
+    #[test]
+    fn v3_auth_filter_aliases() {
+        for alias in ["open", "none", "unauth", "unauthenticated"] {
+            let q = parse(&format!("auth:{alias}")).unwrap();
+            assert_eq!(f(&q, Field::Auth).value, FilterValue::Text("open".into()));
+        }
+        let q = parse("auth:required").unwrap();
+        assert_eq!(f(&q, Field::Auth).value, FilterValue::Text("required".into()));
+        assert!(matches!(parse("auth:banana"), Err(ParseError::BadEnum { .. })));
+    }
+
+    #[test]
+    fn v3_has_exploit_bool() {
+        let q = parse("has_exploit:true").unwrap();
+        assert_eq!(f(&q, Field::HasExploit).value, FilterValue::Bool(true));
     }
 
     #[test]

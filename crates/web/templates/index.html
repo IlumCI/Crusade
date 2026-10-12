@@ -5,7 +5,7 @@
   <input type="text" name="q" value="{{ q }}" placeholder="port:443 country:DE product:nginx &quot;default page&quot;" autofocus>
   <button type="submit">Search</button>
 </form>
-<div class="hint">Filters: port:, country:, city:, asn:, org:, product:, version:, hostname:, ssl.cn:, net:, transport:, tag:, jarm:, http.favicon.hash:, ssh.hostkey:, hassh:, vuln:, has_vuln:, ics:, has_ics:, has_screenshot:, before:, after: — bare words match banners. Prefix a filter with - to negate.</div>
+<div class="hint">Filters: port:, country:, city:, asn:, org:, product:, version:, hostname:, ssl.cn:, net:, transport:, tag:, jarm:, http.favicon.hash:, ssh.hostkey:, hassh:, vuln:, has_vuln:, has_exploit:, ics:, has_ics:, auth:, has_screenshot:, before:, after: — bare words match banners. Prefix a filter with - to negate.</div>
 
 {% if let Some(err) = error %}
 <div class="error">Could not parse query: {{ err }}</div>
@@ -34,8 +34,9 @@
       {% for pr in h.products %}<span class="badge product">{{ pr }}</span>{% endfor %}
     </div>
     {% endif %}
-    {% if h.has_jarm || h.favicon_hash.is_some() || !h.technologies.is_empty() %}
+    {% if h.has_open_auth || h.has_jarm || h.favicon_hash.is_some() || !h.technologies.is_empty() %}
     <div class="badges">
+      {% if h.has_open_auth %}<a class="chip vuln" href="/?q=auth%3Aopen">open/no-auth</a>{% endif %}
       {% if h.has_jarm %}<span class="chip">JARM</span>{% endif %}
       {% if let Some(fh) = h.favicon_hash %}{% if let Some(url) = h.favicon_url %}<a class="chip" href="{{ url }}">favicon:{{ fh }}</a>{% else %}<span class="chip">favicon:{{ fh }}</span>{% endif %}{% endif %}
       {% for tech in h.technologies %}<span class="chip">{{ tech }}</span>{% endfor %}

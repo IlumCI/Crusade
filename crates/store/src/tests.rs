@@ -132,3 +132,26 @@ fn ics_service_is_stored_and_searchable() {
     // vendor is full-text searchable
     assert_eq!(store.search(&parse("Schneider").unwrap(), 10, 0).unwrap().len(), 1);
 }
+
+#[test]
+fn auth_state_and_exploit_tag_searchable() {
+    use crusade_core::model::{AuthState, Tag};
+    let mut store = Store::open_in_memory().unwrap();
+    let mut h = Host::new("192.0.2.88".parse().unwrap());
+    h.last_seen = OffsetDateTime::from_unix_timestamp(1_760_000_000).unwrap();
+    let mut s = Service::new(6379, Transport::Tcp);
+    s.service = Some("redis".into());
+    s.auth = Some(AuthState::Open);
+    s.observed_at = h.last_seen;
+    h.services.push(s);
+    h.tags.push(Tag { name: "exploit-available".into(), cve: Some("CVE-2022-0543".into()), detail: Some("EDB-50124".into()) });
+    store.upsert_host(&h).unwrap();
+
+    assert_eq!(store.search(&parse("auth:open").unwrap(), 10, 0).unwrap().len(), 1);
+    assert_eq!(store.search(&parse("auth:required").unwrap(), 10, 0).unwrap().len(), 0);
+    assert_eq!(store.search(&parse("has_exploit:true").unwrap(), 10, 0).unwrap().len(), 1);
+    assert_eq!(store.search(&parse("-has_exploit:true").unwrap(), 10, 0).unwrap().len(), 0);
+    // round-trip preserves auth
+    let got = store.get_host("192.0.2.88").unwrap().unwrap();
+    assert_eq!(got.services[0].auth, Some(AuthState::Open));
+}

@@ -102,16 +102,18 @@ impl Store {
             };
             let favicon = svc.http.as_ref().and_then(|h| h.favicon_hash);
             let ics_protocol = svc.ics.as_ref().map(|i| i.protocol.clone());
+            let auth_state = svc.auth.and_then(|a| serde_json::to_value(a).ok())
+                .and_then(|v| v.as_str().map(str::to_string));
             tx.execute(
                 "INSERT INTO services
                    (ip, port, transport, service, product, version, cpe, ssl_cn,
                     jarm, favicon_hash, ssh_hostkey, hassh, tls_version, ics_protocol,
-                    has_screenshot, observed_at, banner)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                    auth_state, has_screenshot, observed_at, banner)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
                 params![
                     ip, svc.port, transport, svc.service, svc.product, svc.version,
                     svc.cpe, ssl_cn, svc.jarm, favicon, ssh_hostkey, hassh, tls_version,
-                    ics_protocol, has_shot, svc.observed_at.unix_timestamp(), svc.banner
+                    ics_protocol, auth_state, has_shot, svc.observed_at.unix_timestamp(), svc.banner
                 ],
             )?;
             tx.execute(

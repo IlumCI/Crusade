@@ -17,6 +17,11 @@ const IP2ASN_V4: &str = "https://iptoasn.com/data/ip2asn-v4.tsv.gz";
 const IP2ASN_V6: &str = "https://iptoasn.com/data/ip2asn-v6.tsv.gz";
 const CISA_KEV: &str =
     "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
+// Exploit cross-reference feeds (keyless, public):
+const EXPLOITDB_CSV: &str =
+    "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv";
+const METASPLOIT_META: &str =
+    "https://raw.githubusercontent.com/rapid7/metasploit-framework/master/db/modules_metadata_base.json";
 
 pub async fn update_data(cfg: &Config) -> Result<()> {
     let dir = &cfg.data.dir;
@@ -25,6 +30,14 @@ pub async fn update_data(cfg: &Config) -> Result<()> {
     download_gz(IP2ASN_V4, &dir.join("ip2asn-v4.tsv")).await?;
     download_gz(IP2ASN_V6, &dir.join("ip2asn-v6.tsv")).await?;
     download_plain(CISA_KEV, &dir.join("known_exploited_vulnerabilities.json")).await?;
+    // Exploit cross-reference. Best-effort: a failure here shouldn't abort the
+    // whole update (these hosts/paths change occasionally).
+    if let Err(e) = download_plain(EXPLOITDB_CSV, &dir.join("files_exploits.csv")).await {
+        eprintln!("  (exploit-db feed skipped: {e})");
+    }
+    if let Err(e) = download_plain(METASPLOIT_META, &dir.join("modules_metadata_base.json")).await {
+        eprintln!("  (metasploit feed skipped: {e})");
+    }
 
     println!(
         "Datasets updated in {}. (For CVE matching, add NVD `nvdcve-*.json` feeds there too.)",

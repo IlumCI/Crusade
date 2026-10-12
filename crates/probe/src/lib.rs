@@ -24,6 +24,7 @@
 //! authentication is attempted, no key exchange is completed and no exploit
 //! payload is ever sent — this is a cataloguing tool, not an attack tool.
 
+pub mod auth;
 pub mod fingerprint;
 pub mod grab;
 pub mod http;
@@ -38,8 +39,9 @@ use std::time::Duration;
 
 use time::OffsetDateTime;
 
-use crusade_core::{HttpInfo, Service, Transport};
+use crusade_core::{AuthState, HttpInfo, Service, Transport};
 
+pub use auth::{classify_http_auth, is_auth_posture_port, posture_probe};
 pub use fingerprint::{Fingerprints, ProbeKind, ServiceMatch};
 pub use ics::{ics_ports_tcp, ics_ports_udp, probe_ics_service};
 pub use jarm::jarm;
@@ -176,8 +178,39 @@ pub async fn probe_service(
         }
     }
 
+    // 7. Authentication posture (observed, never credentialed). Determined from
+    //    the service's own response to a standard read-only request — see the
+    //    `auth` module for the strict observe-don't-authenticate policy.
+    svc.auth = assess_auth(ip, port, &svc, cfg.timeout).await;
+
     svc.observed_at = OffsetDateTime::now_utc();
     svc
+}
+
+/// Determine a service's [`AuthState`] by observation only.
+///
+/// Precedence: an HTTP response classifies via its status / challenge headers;
+/// an ICS service is [`AuthState::Open`] (these OT protocols have no
+/// authentication at all); an SNMP service that answered the public-community
+/// query is `Open`; otherwise, for the services with a read-only posture probe
+/// (Redis, MongoDB, Elasticsearch, Memcached, VNC) we run that probe. Any other
+/// service is left unassessed (`None`).
+async fn assess_auth(
+    ip: IpAddr,
+    port: u16,
+    svc: &Service,
+    timeout: Duration,
+) -> Option<AuthState> {
+    if let Some(http) = &svc.http {
+        return Some(auth::classify_http_auth(http));
+    }
+    if svc.ics.is_some() {
+        return Some(AuthState::Open);
+    }
+    if svc.service.as_deref() == Some("snmp") && svc.banner.is_some() {
+        return Some(AuthState::Open);
+    }
+    auth::posture_probe(ip, port, timeout).await
 }
 
 /// Fetch and hash `/favicon.ico` over the transport the port speaks.

@@ -77,7 +77,17 @@ fn load_vulns(dir: &Path) -> Result<VulnDb> {
     }
     let kev_path = dir.join("known_exploited_vulnerabilities.json");
     let kev = std::fs::read_to_string(&kev_path).ok();
-    VulnDb::from_feeds(&nvd, kev.as_deref())
+    let mut db = VulnDb::from_feeds(&nvd, kev.as_deref())?;
+
+    // Exploit cross-reference feeds (best-effort; absent feeds are fine).
+    let edb = std::fs::read_to_string(dir.join("files_exploits.csv")).ok();
+    let msf = std::fs::read_to_string(dir.join("modules_metadata_base.json")).ok();
+    if edb.is_some() || msf.is_some() {
+        if let Err(e) = db.load_exploits(edb.as_deref(), msf.as_deref()) {
+            warn!("exploit feeds failed to load ({e}); exploit tags disabled");
+        }
+    }
+    Ok(db)
 }
 
 /// Probe, enrich, tag and store every discovered host. Returns the hosts.

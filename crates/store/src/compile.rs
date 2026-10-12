@@ -121,6 +121,17 @@ pub fn compile(query: &Query) -> Compiled {
                 let kw = if want == !neg { "EXISTS" } else { "NOT EXISTS" };
                 clauses.push(format!("{kw} ({inner})"));
             }
+            Field::Auth => {
+                push_service_exists(&mut clauses, &mut params, neg, "auth_state = ?", val(&filter.value));
+            }
+            Field::HasExploit => {
+                // Exploit availability rides on an `exploit-available` tag emitted
+                // by the vuln crate when a CVE maps to a known public exploit.
+                let want = matches!(filter.value, FilterValue::Bool(true));
+                let inner = "SELECT 1 FROM tags t WHERE t.ip = hosts.ip AND t.name = 'exploit-available'";
+                let kw = if want == !neg { "EXISTS" } else { "NOT EXISTS" };
+                clauses.push(format!("{kw} ({inner})"));
+            }
         }
     }
 
@@ -285,6 +296,17 @@ mod tests {
     #[test]
     fn has_vuln_negation() {
         let c = compile(&parse("-has_vuln:true").unwrap());
+        assert!(c.sql.contains("NOT EXISTS"));
+    }
+
+    #[test]
+    fn auth_and_has_exploit() {
+        let c = compile(&parse("auth:open").unwrap());
+        assert!(c.sql.contains("auth_state = ?"));
+        let c = compile(&parse("has_exploit:true").unwrap());
+        assert!(c.sql.contains("name = 'exploit-available'"));
+        assert!(c.sql.contains("EXISTS"));
+        let c = compile(&parse("-has_exploit:true").unwrap());
         assert!(c.sql.contains("NOT EXISTS"));
     }
 

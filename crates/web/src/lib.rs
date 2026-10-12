@@ -62,7 +62,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use crusade_core::model::{Host, HttpInfo, Service, SshInfo, Transport};
+    use crusade_core::model::{AuthState, Host, HttpInfo, Service, SshInfo, Tag, Transport};
     use http_body_util::BodyExt;
     use std::net::IpAddr;
     use tower::ServiceExt; // for `oneshot`
@@ -84,6 +84,8 @@ mod tests {
         svc.version = Some("1.25.0".into());
         svc.banner = Some("HTTP/1.1 200 OK\r\nServer: nginx".into());
         svc.jarm = Some("27d40d40d29d40d1dc42d43d00041d4689ee210389f4f6b4b5b1b93f92252d".into());
+        // Reachable without credentials — the notable recon signal.
+        svc.auth = Some(AuthState::Open);
         svc.http = Some(HttpInfo {
             status: Some(200),
             server: Some("nginx".into()),
@@ -101,6 +103,12 @@ mod tests {
             hassh: Some("06046964c022c6407d15a27b12a6a4fb".into()),
         });
         host.services.push(svc);
+        // A matched CVE with a known public exploit.
+        host.tags.push(Tag {
+            name: "exploit-available".into(),
+            cve: Some("CVE-2021-1234".into()),
+            detail: Some("EDB-50123; msf: exploit/linux/http/example".into()),
+        });
         store.upsert_host(&host).expect("seed host 1");
 
         let ip2: IpAddr = "198.51.100.7".parse().unwrap();
@@ -258,6 +266,58 @@ mod tests {
         // SSH + technologies surfaced as well.
         assert!(body.contains("SSH-2.0-OpenSSH_8.9"), "host page missing SSH banner");
         assert!(body.contains("06046964c022c6407d15a27b12a6a4fb"), "host page missing HASSH");
+    }
+
+    #[tokio::test]
+    async fn host_page_shows_auth_and_exploit() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/host/203.0.113.10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        // Auth posture badge rendered on the service header line.
+        assert!(body.contains("auth:open"), "host page missing auth badge: {body}");
+        // exploit-available tag surfaced with its CVE and a pivot link.
+        assert!(
+            body.contains("exploit-available"),
+            "host page missing exploit-available tag"
+        );
+        assert!(
+            body.contains("/?q=vuln%3ACVE-2021-1234"),
+            "host page missing CVE pivot link: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_open_query_finds_host() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?q=auth:open")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("203.0.113.10"),
+            "auth:open search missing seeded open-auth host: {body}"
+        );
+        // The result row flags the unauthenticated exposure.
+        assert!(
+            body.contains("open/no-auth"),
+            "results row missing open/no-auth badge"
+        );
     }
 
     #[tokio::test]

@@ -42,9 +42,27 @@ fn tag_is_vuln(tag: &Tag) -> bool {
         return true;
     }
     let n = tag.name.to_ascii_lowercase();
-    ["vuln", "cve", "kev", "exploit", "known-exploited", "insecure", "cwe"]
-        .iter()
-        .any(|needle| n.contains(needle))
+    [
+        "vuln",
+        "cve",
+        "kev",
+        "exploit",
+        "known-exploited",
+        "insecure",
+        "cwe",
+        "unauth",
+    ]
+    .iter()
+    .any(|needle| n.contains(needle))
+}
+
+/// Lowercase string form of an auth posture (matches the serde `rename_all`
+/// representation, e.g. `Open` -> `"open"`), used for the display badge.
+fn auth_label(a: crusade_core::AuthState) -> String {
+    serde_json::to_value(a)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// A tag as rendered: the raw name plus whether it should be highlighted and,
@@ -89,6 +107,9 @@ pub struct HostRow {
     pub favicon_url: Option<String>,
     /// Detected technologies across all services (deduped), for hint chips.
     pub technologies: Vec<String>,
+    /// True when any service was observed reachable without credentials
+    /// (`auth == Open`) — surfaces an "open/no-auth" hint badge on the row.
+    pub has_open_auth: bool,
 }
 
 impl From<&Host> for HostRow {
@@ -98,6 +119,10 @@ impl From<&Host> for HostRow {
         ports.dedup();
 
         let has_jarm = h.services.iter().any(|s| s.jarm.is_some());
+        let has_open_auth = h
+            .services
+            .iter()
+            .any(|s| matches!(s.auth, Some(crusade_core::AuthState::Open)));
         let favicon_hash = h
             .services
             .iter()
@@ -125,6 +150,7 @@ impl From<&Host> for HostRow {
             favicon_hash,
             favicon_url: favicon_hash.map(|v| pivot("http.favicon.hash", &v.to_string())),
             technologies,
+            has_open_auth,
         }
     }
 }
@@ -176,6 +202,12 @@ pub struct ServiceView {
     pub favicon_url: Option<String>,
     /// ICS/OT device identification, with a `/?q=ics:<proto>` pivot.
     pub ics: Option<IcsView>,
+    /// Observed auth posture, lowercased ("open"/"required"/"unknown"), or
+    /// `None` when not determined.
+    pub auth: Option<String>,
+    /// True when `auth` is `Open` — the notable "reachable without credentials"
+    /// recon signal the template styles as a warning badge.
+    pub auth_open: bool,
     pub observed_at: String,
 }
 
@@ -211,6 +243,8 @@ impl From<&Service> for ServiceView {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| "tcp".to_string());
         let favicon_hash = s.http.as_ref().and_then(|h| h.favicon_hash);
+        let auth = s.auth.map(auth_label);
+        let auth_open = matches!(s.auth, Some(crusade_core::AuthState::Open));
         ServiceView {
             port: s.port,
             transport,
@@ -227,6 +261,8 @@ impl From<&Service> for ServiceView {
             favicon_hash,
             favicon_url: favicon_hash.map(|v| pivot("http.favicon.hash", &v.to_string())),
             ics: s.ics.as_ref().map(IcsView::from),
+            auth,
+            auth_open,
             observed_at: fmt_time(s.observed_at),
         }
     }

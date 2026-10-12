@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tokio::net::UdpSocket;
 
-use crusade_core::{Service, Transport};
+use crusade_core::{AuthState, Service, Transport};
 
 /// Maximum reply bytes we read from a single datagram exchange.
 const MAX_UDP_REPLY: usize = 4096;
@@ -28,7 +28,7 @@ const MAX_UDP_REPLY: usize = 4096;
 /// Returns `None` for ports we have no probe for, or when no usable reply
 /// arrives. Exactly one request is sent and one reply read.
 pub async fn probe_udp_service(ip: IpAddr, port: u16, timeout: Duration) -> Option<Service> {
-    match port {
+    let mut svc = match port {
         53 => probe_dns(ip, port, timeout).await,
         123 => probe_ntp(ip, port, timeout).await,
         137 => probe_netbios(ip, port, timeout).await,
@@ -39,7 +39,16 @@ pub async fn probe_udp_service(ip: IpAddr, port: u16, timeout: Duration) -> Opti
             crate::ics::probe_ics_service(ip, port, timeout).await
         }
         _ => None,
+    }?;
+
+    // Authentication posture, observed only. ICS/OT protocols have no auth;
+    // an SNMP service that answered the public-community GET is reachable with
+    // no credentials. Both are the key `Open` recon signal.
+    if svc.ics.is_some() || svc.service.as_deref() == Some("snmp") {
+        svc.auth = Some(AuthState::Open);
     }
+
+    Some(svc)
 }
 
 /// Send `payload` to `ip:port` over UDP and read a single reply.

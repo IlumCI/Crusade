@@ -8,8 +8,12 @@
 //!   data feeds and the CISA KEV catalog). No network access happens here — the
 //!   feeds are consumed from strings/disk by the caller.
 //! * [`heuristics`] derives feed-free tags from TLS certificates, HTTP titles,
-//!   and open ports (self-signed/expired certs, default pages, plaintext HTTP,
-//!   exposed databases, etc.).
+//!   open ports, and observed authentication posture (self-signed/expired
+//!   certs, default pages, plaintext HTTP, exposed/unauthenticated databases
+//!   and ICS devices, etc.).
+//! * [`exploit`] cross-references matched CVEs against free, no-key public
+//!   exploit feeds (Exploit-DB's `files_exploits.csv` and Metasploit's
+//!   `modules_metadata_base.json`) to record that a public exploit *exists*.
 //!
 //! # Safety / scope
 //!
@@ -17,13 +21,17 @@
 //! **not** connect to, probe, verify, or exploit any host or service, and it
 //! performs no network I/O whatsoever. A tag means "based on what we already
 //! observed, this looks relevant" — never "we confirmed this is exploitable".
-//! Acting on a tag is left entirely to the operator.
+//! In particular, the exploit cross-reference only records that a public
+//! exploit EXISTS for a matched CVE — it never downloads, runs, or verifies any
+//! exploit. Acting on a tag is left entirely to the operator.
 
 pub mod cve;
+pub mod exploit;
 pub mod heuristics;
 
 pub use cve::{
     load_kev, load_nvd, parse_cpe, version_cmp, CpeMatch, CveEntry, KevCatalog, KevEntry,
     ParsedCpe, VulnDb,
 };
+pub use exploit::{parse_exploitdb_csv, parse_metasploit_json, ExploitRefs};
 pub use heuristics::heuristic_tags;

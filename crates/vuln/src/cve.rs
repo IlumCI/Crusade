@@ -24,6 +24,8 @@ use anyhow::Context;
 use crusade_core::{Host, Tag};
 use serde::Deserialize;
 
+use crate::exploit::ExploitRefs;
+
 /// Maximum length of the description copied into a tag's `detail`.
 const DETAIL_MAX: usize = 180;
 
@@ -132,6 +134,9 @@ impl KevCatalog {
 pub struct VulnDb {
     cves: Vec<CveEntry>,
     kev: KevCatalog,
+    /// CVE (upper-cased) → known public exploits, populated additively by
+    /// [`VulnDb::load_exploits`]. Empty until exploit feeds are loaded.
+    exploits: HashMap<String, ExploitRefs>,
 }
 
 impl VulnDb {
@@ -153,7 +158,18 @@ impl VulnDb {
             Some(j) => load_kev(j).context("parsing CISA KEV catalog")?,
             None => KevCatalog::default(),
         };
-        Ok(VulnDb { cves, kev })
+        Ok(VulnDb { cves, kev, exploits: HashMap::new() })
+    }
+
+    /// Mutable access to the exploit index, for [`VulnDb::load_exploits`].
+    pub(crate) fn exploits_mut(&mut self) -> &mut HashMap<String, ExploitRefs> {
+        &mut self.exploits
+    }
+
+    /// The known public exploits for `cve`, if any (CVE id is matched
+    /// case-insensitively).
+    pub fn exploits_for(&self, cve: &str) -> Option<&ExploitRefs> {
+        self.exploits.get(&cve.to_uppercase())
     }
 
     /// Number of CVEs loaded.
@@ -219,6 +235,26 @@ impl VulnDb {
                 svc.cpe.as_deref(),
             ));
         }
+
+        // Exploit cross-reference: for each CVE already tagged (from NVD/KEV
+        // matching), record that a PUBLIC exploit EXISTS when the exploit index
+        // knows one. This never verifies or runs anything — it only reports the
+        // existence of a public exploit for a matched CVE.
+        if !self.exploits.is_empty() {
+            let mut exploit_tags: Vec<Tag> = Vec::new();
+            for tag in &new_tags {
+                let Some(cve) = &tag.cve else { continue };
+                if let Some(refs) = self.exploits.get(&cve.to_uppercase()) {
+                    exploit_tags.push(Tag {
+                        name: "exploit-available".to_string(),
+                        cve: Some(cve.clone()),
+                        detail: Some(refs.summary()),
+                    });
+                }
+            }
+            new_tags.extend(exploit_tags);
+        }
+
         for tag in new_tags {
             let dup = host
                 .tags
@@ -614,5 +650,67 @@ mod tests {
         assert_eq!(p.product.as_deref(), Some("nginx"));
         assert_eq!(p.version, None);
         assert!(parse_cpe("not-a-cpe").is_none());
+    }
+
+    #[test]
+    fn tag_host_marks_cve_with_known_public_exploit() {
+        use crusade_core::{Host, Service, Transport};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        // NVD matches nginx 1.18.0 -> CVE-2021-23017.
+        let mut db = VulnDb::from_feeds(&[NVD.to_string()], None).unwrap();
+        // Exploit index knows a public exploit for exactly that CVE.
+        let edb = "id,file,description,codes\n\
+7777,exploits/x.py,\"nginx resolver bug\",CVE-2021-23017\n";
+        db.load_exploits(Some(edb), None).unwrap();
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+        let mut svc = Service::new(80, Transport::Tcp);
+        svc.product = Some("nginx".to_string());
+        svc.version = Some("1.18.0".to_string());
+        host.services.push(svc);
+
+        db.tag_host(&mut host);
+
+        let exploit = host
+            .tags
+            .iter()
+            .find(|t| t.name == "exploit-available");
+        let exploit = exploit.expect("expected an exploit-available tag");
+        assert_eq!(exploit.cve.as_deref(), Some("CVE-2021-23017"));
+        assert!(
+            exploit.detail.as_deref().unwrap_or_default().contains("EDB-7777"),
+            "detail was {:?}",
+            exploit.detail
+        );
+    }
+
+    #[test]
+    fn tag_host_does_not_mark_cve_without_known_exploit() {
+        use crusade_core::{Host, Service, Transport};
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let mut db = VulnDb::from_feeds(&[NVD.to_string()], None).unwrap();
+        // Exploit index only knows an UNRELATED CVE.
+        let edb = "id,file,description,codes\n\
+8888,exploits/y.py,\"unrelated\",CVE-1999-0001\n";
+        db.load_exploits(Some(edb), None).unwrap();
+
+        let mut host = Host::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)));
+        let mut svc = Service::new(80, Transport::Tcp);
+        svc.product = Some("nginx".to_string());
+        svc.version = Some("1.18.0".to_string());
+        host.services.push(svc);
+
+        db.tag_host(&mut host);
+
+        // The host is still tagged with the CVE itself ...
+        assert!(host.tags.iter().any(|t| t.name == "cve"));
+        // ... but nothing claims a public exploit exists for it.
+        assert!(
+            !host.tags.iter().any(|t| t.name == "exploit-available"),
+            "unexpected exploit-available tag: {:?}",
+            host.tags
+        );
     }
 }

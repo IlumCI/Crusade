@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS services (
     hassh       TEXT,
     tls_version TEXT,
     ics_protocol TEXT,
+    auth_state  TEXT,
     has_screenshot INTEGER NOT NULL DEFAULT 0,
     observed_at INTEGER NOT NULL,
     banner      TEXT,
@@ -54,6 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_services_favicon ON services(favicon_hash);
 CREATE INDEX IF NOT EXISTS idx_services_hassh   ON services(hassh);
 CREATE INDEX IF NOT EXISTS idx_services_transport ON services(transport);
 CREATE INDEX IF NOT EXISTS idx_services_ics     ON services(ics_protocol);
+CREATE INDEX IF NOT EXISTS idx_services_auth    ON services(auth_state);
 
 -- Tags attached to a host (vuln tags carry a cve id).
 CREATE TABLE IF NOT EXISTS tags (

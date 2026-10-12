@@ -114,8 +114,27 @@ pub struct Service {
     /// speaks an ICS protocol (Modbus, S7, BACnet, DNP3, EtherNet/IP, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ics: Option<IcsInfo>,
+    /// Observed authentication posture: whether the service answered a standard
+    /// read-only request without requiring credentials. Determined by observing
+    /// the service's own response (HTTP 401 / WWW-Authenticate, Redis -NOAUTH,
+    /// a VNC handshake's offered security types, ICS protocols having no auth) —
+    /// Crusade never submits credentials or attempts to authenticate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthState>,
     #[serde(with = "time::serde::rfc3339")]
     pub observed_at: OffsetDateTime,
+}
+
+/// A service's authentication posture, as passively observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthState {
+    /// Reachable and answering without any credentials — the key recon signal.
+    Open,
+    /// The service challenged for or required authentication.
+    Required,
+    /// Could not be determined.
+    Unknown,
 }
 
 impl Service {
@@ -133,6 +152,7 @@ impl Service {
             ssh: None,
             jarm: None,
             ics: None,
+            auth: None,
             observed_at: OffsetDateTime::now_utc(),
         }
     }
