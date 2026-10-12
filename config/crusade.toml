@@ -27,3 +27,14 @@ bind = "127.0.0.1:8088"
 [data]
 dir = "data"
 nmap_probes = "/usr/share/nmap/nmap-service-probes"
+
+[alert]
+# Transports for `crusade monitor`. All optional — with none set, alerts are
+# only recorded (view with `crusade alerts`).
+webhooks   = []                 # e.g. ["https://hooks.slack.com/services/XXX"]
+# smtp_host  = "smtp.example.org"
+# smtp_port  = 587
+# smtp_user  = "crusade"
+# smtp_pass  = "..."
+# email_from = "crusade@example.org"
+# email_to   = ["secops@example.org"]

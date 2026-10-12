@@ -4,6 +4,7 @@
 //! `blocklist`. Everything is connect-and-read only and gated by the mandatory
 //! blocklist in `crusade-scan`.
 
+mod alert;
 mod config;
 mod pipeline;
 mod update;
@@ -118,6 +119,14 @@ enum Command {
         #[arg(long, default_value_t = 15)]
         top: usize,
     },
+    /// List recent alerts, or send a test alert through configured transports.
+    Alerts {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Record + dispatch a synthetic alert to verify webhook/email config.
+        #[arg(long)]
+        test: bool,
+    },
     /// Manage the opt-out blocklist.
     Blocklist {
         #[command(subcommand)]
@@ -175,6 +184,7 @@ async fn main() -> Result<()> {
         }
         Command::Export { query, out } => cmd_export(&cfg, &query.join(" "), out),
         Command::Stats { query, top } => cmd_stats(&cfg, &query.join(" "), top),
+        Command::Alerts { limit, test } => cmd_alerts(&cfg, limit, test).await,
         Command::Blocklist { action } => cmd_blocklist(&cfg, action),
     }
 }
@@ -423,8 +433,14 @@ async fn cmd_monitor(
             let mut store = Store::open(&cfg.database.path)?;
             let hosts = pipeline::process(open, Vec::new(), datasets.clone(), cfg, &mut store).await?;
             if let Some(after) = hosts.into_iter().next() {
-                report_changes(before.as_ref(), &after);
+                record_changes(&store, before.as_ref(), &after)?;
             }
+        }
+
+        // Deliver anything newly recorded through configured transports.
+        {
+            let store = Store::open(&cfg.database.path)?;
+            alert::flush_undelivered(cfg, &store).await?;
         }
 
         if once {
@@ -435,14 +451,23 @@ async fn cmd_monitor(
     }
 }
 
-/// Print a one-line alert for each newly-appeared port or CVE on a host.
-fn report_changes(before: Option<&crusade_core::Host>, after: &crusade_core::Host) {
+/// Record an alert for each newly-appeared port, CVE, or exposure on a host.
+/// Alerts are persisted (and echoed to the console); delivery happens later.
+fn record_changes(
+    store: &Store,
+    before: Option<&crusade_core::Host>,
+    after: &crusade_core::Host,
+) -> Result<()> {
     use std::collections::BTreeSet;
+    let ip = after.ip.to_string();
+
     let old_ports: BTreeSet<u16> =
         before.map(|h| h.services.iter().map(|s| s.port).collect()).unwrap_or_default();
     let new_ports: BTreeSet<u16> = after.services.iter().map(|s| s.port).collect();
     for p in new_ports.difference(&old_ports) {
-        println!("[ALERT] {} new open port {}", after.ip, p);
+        let detail = format!("new open port {p}");
+        println!("[ALERT] {ip} {detail}");
+        store.record_alert(&ip, "new-port", &detail)?;
     }
 
     let old_cves: BTreeSet<&str> = before
@@ -451,10 +476,49 @@ fn report_changes(before: Option<&crusade_core::Host>, after: &crusade_core::Hos
     for t in &after.tags {
         if let Some(cve) = &t.cve {
             if !old_cves.contains(cve.as_str()) {
-                println!("[ALERT] {} new vulnerability {}", after.ip, cve);
+                let detail = format!("new vulnerability {cve}");
+                println!("[ALERT] {ip} {detail}");
+                store.record_alert(&ip, "new-vuln", &detail)?;
             }
         }
     }
+
+    // New unauthenticated exposure (auth:open sensitive service) is alert-worthy.
+    let old_exposed = before.map(host_is_exposed).unwrap_or(false);
+    if !old_exposed && host_is_exposed(after) {
+        let detail = "unauthenticated exposure detected".to_string();
+        println!("[ALERT] {ip} {detail}");
+        store.record_alert(&ip, "new-exposure", &detail)?;
+    }
+    Ok(())
+}
+
+fn host_is_exposed(h: &crusade_core::Host) -> bool {
+    h.tags.iter().any(|t| t.name == "unauthenticated-access")
+}
+
+async fn cmd_alerts(cfg: &Config, limit: usize, test: bool) -> Result<()> {
+    let store = Store::open(&cfg.database.path)?;
+    if test {
+        store.record_alert("0.0.0.0", "test", "crusade alert transport test")?;
+        alert::flush_undelivered(cfg, &store).await?;
+        let transports = cfg.alert.webhooks.len() + usize::from(cfg.alert.smtp_host.is_some());
+        println!("Recorded a test alert and flushed. Configured transports: {transports}.");
+        return Ok(());
+    }
+    let alerts = store.recent_alerts(limit)?;
+    if alerts.is_empty() {
+        println!("No alerts recorded yet. Run `crusade monitor` to generate them.");
+        return Ok(());
+    }
+    for a in alerts {
+        let when = time::OffsetDateTime::from_unix_timestamp(a.ts)
+            .map(|t| t.to_string())
+            .unwrap_or_else(|_| a.ts.to_string());
+        let mark = if a.delivered { "✓" } else { "·" };
+        println!("{mark} {when}  {:<13} {:<16} {}", a.kind, a.ip, a.detail);
+    }
+    Ok(())
 }
 
 fn cmd_export(cfg: &Config, raw: &str, out: Option<PathBuf>) -> Result<()> {

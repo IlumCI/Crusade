@@ -12,6 +12,7 @@ pub struct Config {
     pub sweep: Sweep,
     pub web: Web,
     pub data: Data,
+    pub alert: Alert,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,4 +108,20 @@ impl Default for Data {
     fn default() -> Self {
         Data { dir: "data".into(), nmap_probes: "/usr/share/nmap/nmap-service-probes".into() }
     }
+}
+
+/// Alert transports used by `crusade monitor`. All optional; empty = log only.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Alert {
+    /// Generic JSON webhook URLs (Slack/Discord/Teams-compatible POST).
+    pub webhooks: Vec<String>,
+    /// SMTP relay host; email is sent only when this is set.
+    pub smtp_host: Option<String>,
+    pub smtp_port: Option<u16>,
+    pub smtp_user: Option<String>,
+    pub smtp_pass: Option<String>,
+    /// From / To addresses for alert email.
+    pub email_from: Option<String>,
+    pub email_to: Vec<String>,
 }

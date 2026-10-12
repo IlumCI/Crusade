@@ -87,3 +87,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS banner_fts USING fts5(
     body,
     tokenize = "unicode61"
 );
+
+-- Alerts raised by `crusade monitor` (new port / new vuln / exposure), with a
+-- delivery flag so transports (webhook/email) send each one at most once.
+CREATE TABLE IF NOT EXISTS alerts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         INTEGER NOT NULL,     -- unix seconds
+    ip         TEXT NOT NULL,
+    kind       TEXT NOT NULL,        -- new-port | new-vuln | new-exposure | test
+    detail     TEXT NOT NULL,
+    delivered  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_ts        ON alerts(ts);
+CREATE INDEX IF NOT EXISTS idx_alerts_delivered ON alerts(delivered);

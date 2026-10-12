@@ -32,6 +32,7 @@ toml = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 flate2 = "1"
 futures = "0.3"
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 
 crusade-core = { path = "crates/core" }
 crusade-store = { path = "crates/store" }
@@ -73,6 +74,7 @@ toml.workspace = true
 reqwest.workspace = true
 flate2.workspace = true
 futures.workspace = true
+lettre.workspace = true
 
 [profile.release]
 lto = "thin"

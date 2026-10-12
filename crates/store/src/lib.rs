@@ -38,6 +38,17 @@ pub struct Facets {
     pub tags: Vec<Facet>,
 }
 
+/// An alert row raised by the monitor and (optionally) delivered to transports.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Alert {
+    pub id: i64,
+    pub ts: i64,
+    pub ip: String,
+    pub kind: String,
+    pub detail: String,
+    pub delivered: bool,
+}
+
 impl Store {
     /// Open (creating if needed) the database at `path` and apply the schema.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -316,6 +327,49 @@ impl Store {
     pub fn all_host_ips(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT ip FROM hosts ORDER BY last_seen ASC")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Record an alert (returns its id). `delivered` starts false.
+    pub fn record_alert(&self, ip: &str, kind: &str, detail: &str) -> Result<i64> {
+        let ts = time::OffsetDateTime::now_utc().unix_timestamp();
+        self.conn.execute(
+            "INSERT INTO alerts (ts, ip, kind, detail, delivered) VALUES (?1,?2,?3,?4,0)",
+            params![ts, ip, kind, detail],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Alerts not yet marked delivered, oldest first.
+    pub fn undelivered_alerts(&self) -> Result<Vec<Alert>> {
+        self.query_alerts("SELECT id, ts, ip, kind, detail, delivered FROM alerts WHERE delivered = 0 ORDER BY ts ASC", &[])
+    }
+
+    /// The most recent alerts, newest first.
+    pub fn recent_alerts(&self, limit: usize) -> Result<Vec<Alert>> {
+        self.query_alerts(
+            "SELECT id, ts, ip, kind, detail, delivered FROM alerts ORDER BY ts DESC LIMIT ?1",
+            &[&(limit as i64)],
+        )
+    }
+
+    pub fn mark_alert_delivered(&self, id: i64) -> Result<()> {
+        self.conn.execute("UPDATE alerts SET delivered = 1 WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    fn query_alerts(&self, sql: &str, binds: &[&dyn rusqlite::ToSql]) -> Result<Vec<Alert>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(binds, |r| {
+            Ok(Alert {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                ip: r.get(2)?,
+                kind: r.get(3)?,
+                detail: r.get(4)?,
+                delivered: r.get::<_, i64>(5)? != 0,
+            })
+        })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 }
