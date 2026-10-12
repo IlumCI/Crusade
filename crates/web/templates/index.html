@@ -13,7 +13,7 @@
 
 {% if searched %}
   {% if error.is_none() %}
-  <div class="count">{{ total }} host{% if total != 1 %}s{% endif %} matched.</div>
+  <div class="count">{{ total }}{% if !total_exact %}+{% endif %} host{% if total != 1 %}s{% endif %} matched.{% if !total_exact %} <span class="muted">(exact counts above {{ total }} are not computed)</span>{% endif %}</div>
   {% endif %}
   {% for h in results %}
   <div class="host">

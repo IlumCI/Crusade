@@ -303,6 +303,8 @@ pub struct IndexTemplate {
     pub error: Option<String>,
     pub searched: bool,
     pub total: i64,
+    /// False when `total` is a capped floor rather than the exact number.
+    pub total_exact: bool,
     pub page: usize,
     pub results: Vec<HostRow>,
     pub has_prev: bool,

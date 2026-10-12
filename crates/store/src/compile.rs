@@ -21,6 +21,20 @@ pub struct Compiled {
 
 /// Build the SQL that selects matching host IPs, newest first.
 pub fn compile(query: &Query) -> Compiled {
+    compile_inner(query, true)
+}
+
+/// Like [`compile`], but without the `ORDER BY`.
+///
+/// Counting does not care about order, and leaving the sort in forces SQLite
+/// to order every match before a `LIMIT` can be applied — which made capped
+/// counts slower than exact ones on queries that are otherwise a plain index
+/// range scan.
+pub fn compile_count(query: &Query) -> Compiled {
+    compile_inner(query, false)
+}
+
+fn compile_inner(query: &Query, ordered: bool) -> Compiled {
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
 
@@ -273,8 +287,11 @@ pub fn compile(query: &Query) -> Compiled {
             .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
             .collect::<Vec<_>>()
             .join(" ");
-        clauses
-            .push("hosts.ip IN (SELECT ip FROM banner_fts WHERE banner_fts MATCH ?)".to_string());
+        // Joined on rowid: banner_fts.ip is UNINDEXED, so matching on it would
+        // not use an index.
+        clauses.push(
+            "hosts.rowid IN (SELECT rowid FROM banner_fts WHERE banner_fts MATCH ?)".to_string(),
+        );
         params.push(Value::Text(fts));
     }
 
@@ -284,7 +301,12 @@ pub fn compile(query: &Query) -> Compiled {
         format!("WHERE {}", clauses.join(" AND "))
     };
 
-    let sql = format!("SELECT hosts.ip FROM hosts {where_sql} ORDER BY hosts.last_seen DESC");
+    let order = if ordered {
+        " ORDER BY hosts.last_seen DESC"
+    } else {
+        ""
+    };
+    let sql = format!("SELECT hosts.ip FROM hosts {where_sql}{order}");
 
     Compiled { sql, params }
 }

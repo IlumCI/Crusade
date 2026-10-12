@@ -49,16 +49,35 @@ fn upsert_is_idempotent_on_current_state() {
     store.upsert_host(&h).unwrap();
     store.upsert_host(&h).unwrap();
     assert_eq!(store.host_count().unwrap(), 1);
-    // but history accumulates
-    let n: i64 = store
-        .conn
-        .query_row(
-            "SELECT COUNT(*) FROM service_history WHERE ip='192.0.2.2'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(n, 2);
+
+    let history = |store: &Store| -> i64 {
+        store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM service_history WHERE ip='192.0.2.2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    // An unchanged rescan does not duplicate the timeline: history records
+    // changes, not passes. Re-observing at a later time is not a change.
+    assert_eq!(history(&store), 1);
+    let mut again = h.clone();
+    again.services[0].observed_at = h.services[0].observed_at + time::Duration::hours(1);
+    store.upsert_host(&again).unwrap();
+    assert_eq!(history(&store), 1);
+
+    // A real change appends.
+    let mut changed = h.clone();
+    changed.services[0].version = Some("2.0".into());
+    store.upsert_host(&changed).unwrap();
+    assert_eq!(history(&store), 2);
+
+    // And so does going back to the previous banner.
+    store.upsert_host(&h).unwrap();
+    assert_eq!(history(&store), 3);
 }
 
 #[test]
@@ -389,4 +408,117 @@ fn service_vectors_rank_and_follow_host_rewrites() {
         .upsert_host(&host_with("192.0.2.30", 80, "x"))
         .unwrap();
     assert_eq!(store.vector_count("m").unwrap(), 2);
+}
+
+#[test]
+fn free_text_search_survives_the_fts_rekey_migration() {
+    // An old database: banner_fts rows keyed by their own rowids (the schema-1
+    // layout), deliberately offset from hosts.rowid so a stale index would be
+    // detectable.
+    let path = std::env::temp_dir().join(format!("crusade-fts-mig-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    {
+        let mut store = Store::open(&path).unwrap();
+        for i in 0..5u16 {
+            store
+                .upsert_host(&host_with(&format!("192.0.2.{}", 40 + i), 80 + i, "nginx"))
+                .unwrap();
+        }
+        // Simulate schema 1: forget the version marker and rewrite the index
+        // with mismatched rowids.
+        store
+            .conn
+            .execute("DELETE FROM meta WHERE key = 'schema_version'", [])
+            .unwrap();
+        store.conn.execute_batch("DELETE FROM banner_fts").unwrap();
+        let mut stmt = store
+            .conn
+            .prepare("SELECT rowid, ip FROM hosts ORDER BY rowid")
+            .unwrap();
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        drop(stmt);
+        for (rowid, ip) in rows {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO banner_fts (rowid, ip, body) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![rowid + 1000, ip, "Welcome to nginx default page"],
+                )
+                .unwrap();
+        }
+        // Stale index: the rowid join finds nothing.
+        assert_eq!(
+            store
+                .search(&parse("\"default page\"").unwrap(), 10, 0)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    // Reopening runs the migration and rebuilds the index.
+    let store = Store::open(&path).unwrap();
+    let hits = store
+        .search(&parse("\"default page\"").unwrap(), 10, 0)
+        .unwrap();
+    assert_eq!(hits.len(), 5, "every host should be findable again");
+    let version: String = store
+        .conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, "2");
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn batch_upsert_matches_one_at_a_time_and_is_atomic() {
+    let hosts: Vec<Host> = (0..20)
+        .map(|i| host_with(&format!("198.51.100.{i}"), 80, "nginx"))
+        .collect();
+
+    let mut batched = Store::open_in_memory().unwrap();
+    batched.upsert_hosts(&hosts).unwrap();
+    let mut single = Store::open_in_memory().unwrap();
+    for h in &hosts {
+        single.upsert_host(h).unwrap();
+    }
+
+    let q = parse("product:nginx \"default page\"").unwrap();
+    assert_eq!(batched.count(&q).unwrap(), 20);
+    assert_eq!(batched.count(&q).unwrap(), single.count(&q).unwrap());
+    assert_eq!(batched.host_count().unwrap(), single.host_count().unwrap());
+
+    // Re-batching the same hosts replaces rather than duplicates.
+    batched.upsert_hosts(&hosts).unwrap();
+    assert_eq!(batched.count(&q).unwrap(), 20);
+    assert!(batched.upsert_hosts(&[]).is_ok());
+}
+
+#[test]
+fn capped_count_reports_whether_it_is_exact() {
+    let mut store = Store::open_in_memory().unwrap();
+    let hosts: Vec<Host> = (0..30)
+        .map(|i| host_with(&format!("203.0.113.{i}"), 80, "nginx"))
+        .collect();
+    store.upsert_hosts(&hosts).unwrap();
+
+    let all = parse("port:80").unwrap();
+    assert_eq!(store.count(&all).unwrap(), 30);
+    // Under the cap: exact.
+    assert_eq!(store.count_capped(&all, 100).unwrap(), (30, true));
+    // At or over the cap: a floor, flagged inexact.
+    assert_eq!(store.count_capped(&all, 10).unwrap(), (10, false));
+    assert_eq!(store.count_capped(&all, 30).unwrap(), (30, false));
+    // No matches is always exact.
+    let none = parse("port:9999").unwrap();
+    assert_eq!(store.count_capped(&none, 10).unwrap(), (0, true));
 }

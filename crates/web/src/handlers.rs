@@ -23,6 +23,10 @@ use crate::{AppState, SharedStore};
 const PAGE_SIZE: usize = 25;
 /// Cap on points returned by the map endpoint.
 const MAP_CAP: usize = 5000;
+/// Largest exact result count we are willing to compute for a search page.
+/// Counting every match scans the whole index; beyond this the page shows
+/// "N+" instead. See [`crusade_store::Store::count_capped`].
+const COUNT_CAP: i64 = 10_000;
 
 /// Query string for both the HTML search page and the JSON search API.
 #[derive(Debug, Default, Deserialize)]
@@ -78,6 +82,7 @@ pub async fn index(
         error: None,
         searched,
         total: 0,
+        total_exact: true,
         page,
         results: Vec::new(),
         has_prev: false,
@@ -91,12 +96,18 @@ pub async fn index(
             Ok(query) => {
                 let store = store.lock().await;
                 let offset = page * PAGE_SIZE;
-                let total = store.count(&query).unwrap_or(0);
+                let (total, exact) = store.count_capped(&query, COUNT_CAP).unwrap_or((0, true));
                 let hosts = store.search(&query, PAGE_SIZE, offset).unwrap_or_default();
                 tpl.results = hosts.iter().map(HostRow::from).collect();
                 tpl.total = total;
+                tpl.total_exact = exact;
                 tpl.has_prev = page > 0;
-                tpl.has_next = offset + tpl.results.len() < total as usize;
+                // With a capped count, keep paging while the page is full.
+                tpl.has_next = if exact {
+                    offset + tpl.results.len() < total as usize
+                } else {
+                    tpl.results.len() == PAGE_SIZE
+                };
                 let enc = encode_component(&q);
                 tpl.prev_url = format!("/?q={enc}&page={}", page.saturating_sub(1));
                 tpl.next_url = format!("/?q={enc}&page={}", page + 1);
@@ -229,6 +240,9 @@ pub async fn api_search(
         Ok(query) => {
             let store = store.lock().await;
             let offset = page * PAGE_SIZE;
+            // The JSON API reports an exact total: callers are programs that
+            // may be paging or tallying, where a capped floor is not useful.
+            // The HTML page caps instead, since a human is waiting on it.
             let total = store.count(&query).unwrap_or(0);
             let results = store.search(&query, PAGE_SIZE, offset).unwrap_or_default();
             Json(SearchResponse {

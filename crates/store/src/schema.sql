@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS services (
     screenshot  TEXT,
     has_screenshot INTEGER NOT NULL DEFAULT 0,
     pending_since INTEGER,          -- probed but silent since this time; NULL = live
+    content_hash INTEGER,           -- hash of the service minus timestamps; see write_host
     observed_at INTEGER NOT NULL,
     banner      TEXT,
     PRIMARY KEY (ip, port, transport),

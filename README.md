@@ -138,6 +138,29 @@ their evidence appear in `crusade host` and the web UI; hosts at 50% or more
 are tagged `honeypot`. Use `-honeypot:true` to keep honeypots out of exposure
 statistics.
 
+## Scale and performance
+
+`cargo run --release -p crusade-store --example ingest_bench -- <hosts> <services> <batch>`
+measures ingest and query cost against synthetic hosts on a real database.
+On a 4-core container, 200k hosts x 3 services:
+
+| | |
+|---|---|
+| ingest (batched) | ~4,800 hosts/s, ~14,400 services/s |
+| on disk | ~5.8 KiB per host |
+| page of 25 results | 0.5–3 ms (80–320 ms for `net:` and free-text, which sort large match sets) |
+| exact count | 1.5–290 ms depending on selectivity |
+| capped count | 0.4–200 ms, and never slower than exact |
+| facets over the whole index | ~2.2 s |
+
+Use `Store::upsert_hosts` for bulk ingest: one transaction per host is
+dominated by commit cost, and batching is ~8x faster. `service_history`
+records *changes* rather than passes — an unchanged rescan appends nothing —
+so a monitor can run continuously without the timeline growing without bound.
+Search pages use `count_capped` and render "10,000+" rather than scanning the
+whole index for an exact total; the JSON API still reports exact counts.
+Faceting the whole index is the remaining slow path.
+
 ## Data sources (all free, no keys)
 
 iptoasn.com ip2asn tables · DB-IP City Lite · nmap-service-probes (ships with

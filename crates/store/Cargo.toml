@@ -14,3 +14,8 @@ thiserror.workspace = true
 tracing.workspace = true
 time.workspace = true
 ipnet.workspace = true
+
+[dev-dependencies]
+crusade-core.workspace = true
+anyhow.workspace = true
+time.workspace = true

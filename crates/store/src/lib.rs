@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::net::IpAddr;
 use std::path::Path;
 
-pub use compile::{compile, Compiled};
+pub use compile::{compile, compile_count, Compiled};
 
 /// Bring databases created by older versions up to the current schema.
 /// `CREATE TABLE IF NOT EXISTS` never adds columns, so new ones go here.
@@ -35,11 +35,309 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_column("services", "pending_since")? {
         conn.execute_batch("ALTER TABLE services ADD COLUMN pending_since INTEGER")?;
     }
+    if !has_column("services", "content_hash")? {
+        conn.execute_batch("ALTER TABLE services ADD COLUMN content_hash INTEGER")?;
+    }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_services_pending ON services(pending_since)",
     )?;
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_hosts_honeypot ON hosts(honeypot)")?;
+
+    // Schema 2 re-keyed banner_fts by hosts.rowid. Rows written by an earlier
+    // version carry unrelated rowids, so free-text search would silently miss
+    // or mismatch them: rebuild the index once from the stored host documents.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    )?;
+    let version: i64 = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    if version < 2 {
+        let hosts: i64 = conn.query_row("SELECT count(*) FROM hosts", [], |r| r.get(0))?;
+        if hosts > 0 {
+            conn.execute_batch("DELETE FROM banner_fts")?;
+            let mut stmt = conn.prepare("SELECT rowid, ip, doc FROM hosts")?;
+            let rows: Vec<(i64, String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<std::result::Result<_, _>>()?;
+            drop(stmt);
+            let mut insert =
+                conn.prepare("INSERT INTO banner_fts (rowid, ip, body) VALUES (?1, ?2, ?3)")?;
+            for (rowid, ip, doc) in rows {
+                let Ok(host) = serde_json::from_str::<Host>(&doc) else {
+                    continue;
+                };
+                let body = fts_body(&host);
+                if !body.is_empty() {
+                    insert.execute(params![rowid, ip, body])?;
+                }
+            }
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')",
+            [],
+        )?;
+    }
     Ok(())
+}
+
+/// Write one host's current state, scan history, tags and FTS row inside an
+/// existing transaction. Shared by [`Store::upsert_host`] and
+/// [`Store::upsert_hosts`].
+fn write_host(tx: &rusqlite::Transaction<'_>, host: &Host) -> Result<()> {
+    let ip = host.ip.to_string();
+    let ip_sort = ip_sort_key(host.ip);
+    let last_seen = host.last_seen.unix_timestamp();
+    let doc = serde_json::to_string(host)?;
+    let hostnames = host.hostnames.join(" ");
+
+    tx.prepare_cached(
+        "INSERT INTO hosts (ip, asn, org, country, city, latitude, longitude, hostnames, ip_sort, last_seen, doc, honeypot)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+         ON CONFLICT(ip) DO UPDATE SET
+           asn=excluded.asn, org=excluded.org, country=excluded.country,
+           city=excluded.city, latitude=excluded.latitude, longitude=excluded.longitude,
+           hostnames=excluded.hostnames, ip_sort=excluded.ip_sort,
+           last_seen=excluded.last_seen, doc=excluded.doc, honeypot=excluded.honeypot",
+    )?
+    .execute(
+        params![
+            ip, host.asn, host.org, host.country, host.city,
+            host.latitude, host.longitude, hostnames, ip_sort, last_seen, doc,
+            host.honeypot.as_ref().map(|h| f64::from(h.score))
+        ],
+    )?;
+
+    // What we already knew about this host's services, so history only grows
+    // when something actually changed.
+    let mut prior: std::collections::HashMap<(u16, String), i64> = std::collections::HashMap::new();
+    {
+        let mut stmt =
+            tx.prepare_cached("SELECT port, transport, content_hash FROM services WHERE ip = ?1")?;
+        let rows = stmt.query_map(params![ip], |r| {
+            Ok((
+                r.get::<_, u16>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (port, transport, hash) = row?;
+            if let Some(hash) = hash {
+                prior.insert((port, transport), hash);
+            }
+        }
+    }
+
+    // Replace current services for this host, and append history. Their
+    // embedding vectors describe the old services, so they go too.
+    tx.prepare_cached("DELETE FROM services WHERE ip = ?1")?
+        .execute(params![ip])?;
+    tx.prepare_cached("DELETE FROM service_vec WHERE ip = ?1")?
+        .execute(params![ip])?;
+    let mut fts_body = String::new();
+    for svc in &host.services {
+        let transport = serde_json::to_value(svc.transport)?
+            .as_str()
+            .unwrap_or("tcp")
+            .to_string();
+        let ssl_cn = svc.tls.as_ref().and_then(|t| t.subject_cn.clone());
+        let tls_version = svc.tls.as_ref().and_then(|t| t.version.clone());
+        let has_shot = i64::from(svc.screenshot.is_some());
+        let (ssh_hostkey, hassh) = match &svc.ssh {
+            Some(s) => (s.host_key_sha256.clone(), s.hassh.clone()),
+            None => (None, None),
+        };
+        let favicon = svc.http.as_ref().and_then(|h| h.favicon_hash);
+        let ics_protocol = svc.ics.as_ref().map(|i| i.protocol.clone());
+        let auth_state = svc
+            .auth
+            .and_then(|a| serde_json::to_value(a).ok())
+            .and_then(|v| v.as_str().map(str::to_string));
+        let content_hash = service_content_hash(svc);
+        tx.prepare_cached(
+            "INSERT INTO services
+               (ip, port, transport, service, product, version, cpe, ssl_cn,
+                jarm, favicon_hash, ssh_hostkey, hassh, tls_version, ics_protocol,
+                auth_state, screenshot, has_screenshot, pending_since, observed_at, banner,
+                content_hash)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+        )?
+        .execute(params![
+            ip,
+            svc.port,
+            transport,
+            svc.service,
+            svc.product,
+            svc.version,
+            svc.cpe,
+            ssl_cn,
+            svc.jarm,
+            favicon,
+            ssh_hostkey,
+            hassh,
+            tls_version,
+            ics_protocol,
+            auth_state,
+            svc.screenshot,
+            has_shot,
+            svc.pending_since.map(|t| t.unix_timestamp()),
+            svc.observed_at.unix_timestamp(),
+            svc.banner,
+            content_hash
+        ])?;
+        // Append to the timeline only when this observation differs from the
+        // last one: an unchanged rescan would otherwise duplicate the whole
+        // service document on every pass.
+        if prior.get(&(svc.port, transport.clone())) != Some(&content_hash) {
+            tx.prepare_cached(
+                "INSERT INTO service_history (ip, port, transport, observed_at, doc)
+             VALUES (?1,?2,?3,?4,?5)",
+            )?
+            .execute(params![
+                ip,
+                svc.port,
+                transport,
+                svc.observed_at.unix_timestamp(),
+                serde_json::to_string(svc)?
+            ])?;
+        }
+
+        // Collect searchable text.
+        if let Some(b) = &svc.banner {
+            fts_body.push_str(b);
+            fts_body.push('\n');
+        }
+        if let Some(http) = &svc.http {
+            if let Some(t) = &http.title {
+                fts_body.push_str(t);
+                fts_body.push('\n');
+            }
+            if let Some(s) = &http.server {
+                fts_body.push_str(s);
+                fts_body.push('\n');
+            }
+            for tech in &http.technologies {
+                fts_body.push_str(tech);
+                fts_body.push('\n');
+            }
+        }
+        if let Some(ssh) = &svc.ssh {
+            if let Some(b) = &ssh.banner {
+                fts_body.push_str(b);
+                fts_body.push('\n');
+            }
+        }
+        if let Some(ics) = &svc.ics {
+            for field in [&ics.vendor, &ics.product, &ics.device_id]
+                .into_iter()
+                .flatten()
+            {
+                fts_body.push_str(field);
+                fts_body.push('\n');
+            }
+        }
+        if let Some(cn) = &ssl_cn {
+            fts_body.push_str(cn);
+            fts_body.push('\n');
+        }
+    }
+
+    // Replace tags.
+    tx.prepare_cached("DELETE FROM tags WHERE ip = ?1")?
+        .execute(params![ip])?;
+    for tag in &host.tags {
+        tx.prepare_cached(
+            "INSERT OR IGNORE INTO tags (ip, name, cve, detail) VALUES (?1,?2,?3,?4)",
+        )?
+        .execute(params![ip, tag.name, tag.cve, tag.detail])?;
+    }
+
+    // Rebuild the FTS row for this host, keyed by its rowid. `ip` is an
+    // UNINDEXED FTS5 column, so deleting by it scans the whole index and
+    // makes bulk ingest quadratic.
+    let rowid: i64 = tx
+        .prepare_cached("SELECT rowid FROM hosts WHERE ip = ?1")?
+        .query_row(params![ip], |r| r.get(0))?;
+    tx.prepare_cached("DELETE FROM banner_fts WHERE rowid = ?1")?
+        .execute(params![rowid])?;
+    if !fts_body.is_empty() {
+        tx.prepare_cached("INSERT INTO banner_fts (rowid, ip, body) VALUES (?1, ?2, ?3)")?
+            .execute(params![rowid, ip, fts_body])?;
+    }
+
+    Ok(())
+}
+
+/// A stable 64-bit hash (FNV-1a) of a service with its volatile timestamps
+/// cleared, so re-observing an unchanged service produces the same value.
+///
+/// Rescans mostly see no change, and appending an identical snapshot to
+/// `service_history` on every pass is the single largest source of write
+/// amplification and disk growth. Comparing hashes lets the history stay a
+/// record of *changes* (the delta-encoding idea from Censys, SIGCOMM 2025)
+/// while the timeline keeps its exact meaning.
+fn service_content_hash(svc: &crusade_core::Service) -> i64 {
+    let mut stable = svc.clone();
+    stable.observed_at = time::OffsetDateTime::UNIX_EPOCH;
+    stable.pending_since = None;
+    let json = serde_json::to_string(&stable).unwrap_or_default();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in json.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash as i64
+}
+
+/// The searchable text of a host: banners, HTTP titles/servers/technologies,
+/// SSH banners, ICS identity and TLS subject names. Used to (re)build the FTS
+/// index, including when migrating an older database.
+fn fts_body(host: &Host) -> String {
+    let mut body = String::new();
+    let mut push = |s: &str| {
+        body.push_str(s);
+        body.push('\n');
+    };
+    for svc in &host.services {
+        if let Some(b) = &svc.banner {
+            push(b);
+        }
+        if let Some(http) = &svc.http {
+            if let Some(t) = &http.title {
+                push(t);
+            }
+            if let Some(s) = &http.server {
+                push(s);
+            }
+            for tech in &http.technologies {
+                push(tech);
+            }
+        }
+        if let Some(ssh) = &svc.ssh {
+            if let Some(b) = &ssh.banner {
+                push(b);
+            }
+        }
+        if let Some(ics) = &svc.ics {
+            for field in [&ics.vendor, &ics.product, &ics.device_id]
+                .into_iter()
+                .flatten()
+            {
+                push(field);
+            }
+        }
+        if let Some(cn) = svc.tls.as_ref().and_then(|t| t.subject_cn.as_deref()) {
+            push(cn);
+        }
+    }
+    body
 }
 
 /// A handle to the Crusade database.
@@ -146,13 +444,16 @@ impl Store {
     /// history). Used when a host has had nothing listening for a long time.
     pub fn delete_host(&mut self, ip: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
-        for table in [
-            "services",
-            "service_vec",
-            "tags",
-            "service_history",
-            "banner_fts",
-        ] {
+        // FTS rows are keyed by the host rowid, so drop them before the host.
+        let rowid: Option<i64> = tx
+            .query_row("SELECT rowid FROM hosts WHERE ip = ?1", params![ip], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if let Some(rowid) = rowid {
+            tx.execute("DELETE FROM banner_fts WHERE rowid = ?1", params![rowid])?;
+        }
+        for table in ["services", "service_vec", "tags", "service_history"] {
             tx.execute(&format!("DELETE FROM {table} WHERE ip = ?1"), params![ip])?;
         }
         tx.execute("DELETE FROM hosts WHERE ip = ?1", params![ip])?;
@@ -284,151 +585,22 @@ impl Store {
     /// service is also appended to `service_history`; the FTS index for this
     /// IP is rebuilt from the host's banners, titles and cert names.
     pub fn upsert_host(&mut self, host: &Host) -> Result<()> {
-        let ip = host.ip.to_string();
-        let ip_sort = ip_sort_key(host.ip);
-        let last_seen = host.last_seen.unix_timestamp();
-        let doc = serde_json::to_string(host)?;
-        let hostnames = host.hostnames.join(" ");
-
         let tx = self.conn.transaction()?;
+        write_host(&tx, host)?;
+        tx.commit()?;
+        Ok(())
+    }
 
-        tx.execute(
-            "INSERT INTO hosts (ip, asn, org, country, city, latitude, longitude, hostnames, ip_sort, last_seen, doc, honeypot)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
-             ON CONFLICT(ip) DO UPDATE SET
-               asn=excluded.asn, org=excluded.org, country=excluded.country,
-               city=excluded.city, latitude=excluded.latitude, longitude=excluded.longitude,
-               hostnames=excluded.hostnames, ip_sort=excluded.ip_sort,
-               last_seen=excluded.last_seen, doc=excluded.doc, honeypot=excluded.honeypot",
-            params![
-                ip, host.asn, host.org, host.country, host.city,
-                host.latitude, host.longitude, hostnames, ip_sort, last_seen, doc,
-                host.honeypot.as_ref().map(|h| f64::from(h.score))
-            ],
-        )?;
-
-        // Replace current services for this host, and append history. Their
-        // embedding vectors describe the old services, so they go too.
-        tx.execute("DELETE FROM services WHERE ip = ?1", params![ip])?;
-        tx.execute("DELETE FROM service_vec WHERE ip = ?1", params![ip])?;
-        let mut fts_body = String::new();
-        for svc in &host.services {
-            let transport = serde_json::to_value(svc.transport)?
-                .as_str()
-                .unwrap_or("tcp")
-                .to_string();
-            let ssl_cn = svc.tls.as_ref().and_then(|t| t.subject_cn.clone());
-            let tls_version = svc.tls.as_ref().and_then(|t| t.version.clone());
-            let has_shot = i64::from(svc.screenshot.is_some());
-            let (ssh_hostkey, hassh) = match &svc.ssh {
-                Some(s) => (s.host_key_sha256.clone(), s.hassh.clone()),
-                None => (None, None),
-            };
-            let favicon = svc.http.as_ref().and_then(|h| h.favicon_hash);
-            let ics_protocol = svc.ics.as_ref().map(|i| i.protocol.clone());
-            let auth_state = svc
-                .auth
-                .and_then(|a| serde_json::to_value(a).ok())
-                .and_then(|v| v.as_str().map(str::to_string));
-            tx.execute(
-                "INSERT INTO services
-                   (ip, port, transport, service, product, version, cpe, ssl_cn,
-                    jarm, favicon_hash, ssh_hostkey, hassh, tls_version, ics_protocol,
-                    auth_state, screenshot, has_screenshot, pending_since, observed_at, banner)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
-                params![
-                    ip,
-                    svc.port,
-                    transport,
-                    svc.service,
-                    svc.product,
-                    svc.version,
-                    svc.cpe,
-                    ssl_cn,
-                    svc.jarm,
-                    favicon,
-                    ssh_hostkey,
-                    hassh,
-                    tls_version,
-                    ics_protocol,
-                    auth_state,
-                    svc.screenshot,
-                    has_shot,
-                    svc.pending_since.map(|t| t.unix_timestamp()),
-                    svc.observed_at.unix_timestamp(),
-                    svc.banner
-                ],
-            )?;
-            tx.execute(
-                "INSERT INTO service_history (ip, port, transport, observed_at, doc)
-                 VALUES (?1,?2,?3,?4,?5)",
-                params![
-                    ip,
-                    svc.port,
-                    transport,
-                    svc.observed_at.unix_timestamp(),
-                    serde_json::to_string(svc)?
-                ],
-            )?;
-
-            // Collect searchable text.
-            if let Some(b) = &svc.banner {
-                fts_body.push_str(b);
-                fts_body.push('\n');
-            }
-            if let Some(http) = &svc.http {
-                if let Some(t) = &http.title {
-                    fts_body.push_str(t);
-                    fts_body.push('\n');
-                }
-                if let Some(s) = &http.server {
-                    fts_body.push_str(s);
-                    fts_body.push('\n');
-                }
-                for tech in &http.technologies {
-                    fts_body.push_str(tech);
-                    fts_body.push('\n');
-                }
-            }
-            if let Some(ssh) = &svc.ssh {
-                if let Some(b) = &ssh.banner {
-                    fts_body.push_str(b);
-                    fts_body.push('\n');
-                }
-            }
-            if let Some(ics) = &svc.ics {
-                for field in [&ics.vendor, &ics.product, &ics.device_id]
-                    .into_iter()
-                    .flatten()
-                {
-                    fts_body.push_str(field);
-                    fts_body.push('\n');
-                }
-            }
-            if let Some(cn) = &ssl_cn {
-                fts_body.push_str(cn);
-                fts_body.push('\n');
-            }
+    /// Upsert many hosts in a single transaction.
+    ///
+    /// Bulk ingest is dominated by per-transaction commit cost, so sweeps and
+    /// backfills should batch rather than calling [`Store::upsert_host`] in a
+    /// loop. Either every host in the batch is written or none is.
+    pub fn upsert_hosts(&mut self, hosts: &[Host]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for host in hosts {
+            write_host(&tx, host)?;
         }
-
-        // Replace tags.
-        tx.execute("DELETE FROM tags WHERE ip = ?1", params![ip])?;
-        for tag in &host.tags {
-            tx.execute(
-                "INSERT OR IGNORE INTO tags (ip, name, cve, detail) VALUES (?1,?2,?3,?4)",
-                params![ip, tag.name, tag.cve, tag.detail],
-            )?;
-        }
-
-        // Rebuild FTS for this IP.
-        tx.execute("DELETE FROM banner_fts WHERE ip = ?1", params![ip])?;
-        if !fts_body.is_empty() {
-            tx.execute(
-                "INSERT INTO banner_fts (ip, body) VALUES (?1, ?2)",
-                params![ip, fts_body],
-            )?;
-        }
-
         tx.commit()?;
         Ok(())
     }
@@ -468,7 +640,7 @@ impl Store {
 
     /// Count hosts matching a query (ignores limit/offset).
     pub fn count(&self, query: &Query) -> Result<i64> {
-        let Compiled { sql, params } = compile(query);
+        let Compiled { sql, params } = compile_count(query);
         let sql = format!("SELECT COUNT(*) FROM ({sql})");
         let n: i64 = self
             .conn
@@ -476,6 +648,23 @@ impl Store {
                 r.get(0)
             })?;
         Ok(n)
+    }
+
+    /// Count matches, stopping once `cap` is reached.
+    ///
+    /// An exact count scans every matching row, which at millions of hosts
+    /// costs far more than the page of results the caller is about to show.
+    /// Returns `(count, exact)`: when `exact` is false the real total is at
+    /// least `count`, and callers should render it as "N+".
+    pub fn count_capped(&self, query: &Query, cap: i64) -> Result<(i64, bool)> {
+        let Compiled { sql, params } = compile_count(query);
+        let sql = format!("SELECT COUNT(*) FROM (SELECT 1 FROM ({sql}) LIMIT {cap})");
+        let n: i64 = self
+            .conn
+            .query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| {
+                r.get(0)
+            })?;
+        Ok((n, n < cap))
     }
 
     /// Compute the top-N facets across the whole dataset.
