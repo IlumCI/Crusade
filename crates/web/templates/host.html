@@ -11,7 +11,15 @@
   {% if let Some(asn) = asn %}<div class="k">ASN</div><div>AS{{ asn }}{% if let Some(org) = org %} — {{ org }}{% endif %}</div>{% endif %}
   {% if let Some(lat) = latitude %}{% if let Some(lon) = longitude %}<div class="k">Location</div><div>{{ lat }}, {{ lon }}</div>{% endif %}{% endif %}
   <div class="k">Last seen</div><div>{{ last_seen }}</div>
+  {% if let Some(pct) = honeypot_pct %}<div class="k">Honeypot score</div><div><span class="chip{% if honeypot_flagged %} vuln{% else %} ok{% endif %}">{{ pct }}%</span></div>{% endif %}
 </div>
+
+{% if !honeypot_evidence.is_empty() %}
+<h2 class="section-title">Honeypot evidence</h2>
+<div class="kv">
+  {% for (signal, weight, detail) in honeypot_evidence %}<div><b>{{ signal }}</b> ({{ weight }}%) — {{ detail }}</div>{% endfor %}
+</div>
+{% endif %}
 
 {% if !tags.is_empty() %}
 <h2 class="section-title">Tags</h2>

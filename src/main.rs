@@ -171,6 +171,12 @@ enum Command {
         #[arg(long)]
         allow_private: bool,
     },
+    /// Recompute honeypot scores for indexed hosts (no network traffic).
+    /// Run after editing `<data dir>/honeypot-rules.toml` or as the index grows.
+    Rescore {
+        /// Optional query; empty = whole index.
+        query: Vec<String>,
+    },
     /// Show scan-queue status (counts + recent jobs).
     Jobs {
         #[arg(long, default_value_t = 20)]
@@ -274,6 +280,7 @@ async fn main() -> Result<()> {
             allow_private,
         } => cmd_worker(&cfg, id, once, poll, allow_private).await,
         Command::Jobs { limit } => cmd_jobs(&cfg, limit),
+        Command::Rescore { query } => cmd_rescore(&cfg, &query.join(" ")),
     }
 }
 
@@ -561,6 +568,17 @@ fn cmd_host(cfg: &Config, ip: &str, json: bool) -> Result<()> {
                         );
                     }
                 }
+                if let Some(a) = &h.honeypot {
+                    println!("  honeypot score: {:.0}%", a.score * 100.0);
+                    for e in &a.evidence {
+                        println!(
+                            "    - {} ({:.0}%): {}",
+                            e.signal,
+                            e.weight * 100.0,
+                            e.detail
+                        );
+                    }
+                }
                 if !h.tags.is_empty() {
                     println!("  tags:");
                     for t in &h.tags {
@@ -755,6 +773,32 @@ fn cmd_export(cfg: &Config, raw: &str, out: Option<PathBuf>) -> Result<()> {
     }
     writer.flush()?;
     eprintln!("Exported {n} host(s).");
+    Ok(())
+}
+
+fn cmd_rescore(cfg: &Config, raw: &str) -> Result<()> {
+    let q = query::parse(raw).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut store = Store::open(&cfg.database.path)?;
+    let rules = pipeline::load_honeypot_rules(&cfg.data.dir);
+    let scorer = pipeline::honeypot_scorer(&rules, &store);
+    let (mut n, mut flagged) = (0u64, 0u64);
+    for ip in store.matching_ips(&q)? {
+        if let Some(mut h) = store.get_host(&ip)? {
+            scorer.apply(&mut h);
+            if h.honeypot
+                .as_ref()
+                .is_some_and(|a| a.score >= crusade_vuln::HONEYPOT_TAG_THRESHOLD)
+            {
+                flagged += 1;
+            }
+            store.update_derived(&h)?;
+            n += 1;
+        }
+    }
+    println!(
+        "Rescored {n} host(s) with {} rule(s); {flagged} at or above the honeypot threshold.",
+        rules.len()
+    );
     Ok(())
 }
 

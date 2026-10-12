@@ -28,6 +28,7 @@
 pub mod cve;
 pub mod exploit;
 pub mod heuristics;
+pub mod honeypot;
 
 pub use cve::{
     load_kev, load_nvd, parse_cpe, to_nvd2_json, version_cmp, CpeMatch, CveEntry, KevCatalog,
@@ -35,3 +36,4 @@ pub use cve::{
 };
 pub use exploit::{parse_exploitdb_csv, parse_metasploit_json, ExploitRefs};
 pub use heuristics::heuristic_tags;
+pub use honeypot::{HoneypotRules, HoneypotScorer, PortStats, HONEYPOT_TAG_THRESHOLD};

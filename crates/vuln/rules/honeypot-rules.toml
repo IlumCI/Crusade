@@ -1,0 +1,63 @@
+# Crusade honeypot signature pack (passive, stage 1).
+#
+# Each rule matches DEFAULT configuration artefacts of open-source honeypots in
+# data Crusade already stores. A match is evidence, not proof: the same strings
+# can occur on genuine (usually very old) systems, which is why every rule has
+# a weight and the final score is a noisy-OR over all evidence on the host.
+#
+# The built-in copy is compiled into the binary; a file at
+# <data dir>/honeypot-rules.toml replaces it, so the pack can be extended
+# without rebuilding. Reference for further signatures: Morishita et al.,
+# "Detect Me If You... Oh Wait", IFIP/IEEE IM 2019 (20 signatures, 14
+# honeypots); Vetterl & Clayton, "Bitter Harvest", USENIX WOOT 2018.
+#
+# field:  ssh.banner | banner | http.title | http.server | tls.subject_cn |
+#         tls.issuer_cn | ics | product
+# match:  exact | contains | prefix   (all case-insensitive)
+
+version = 1
+
+[[rule]]
+id = "cowrie-default-ssh"
+honeypot = "Cowrie"
+field = "ssh.banner"
+match = "exact"
+pattern = "SSH-2.0-OpenSSH_6.0p1 Debian-4+deb7u2"
+weight = 0.6
+source = "Cowrie cowrie.cfg.dist default [ssh] version"
+
+[[rule]]
+id = "kippo-default-ssh"
+honeypot = "Kippo"
+field = "ssh.banner"
+match = "exact"
+pattern = "SSH-2.0-OpenSSH_5.1p1 Debian-5"
+weight = 0.6
+source = "Kippo kippo.cfg.dist default ssh_version_string"
+
+[[rule]]
+id = "conpot-s7-system-name"
+honeypot = "Conpot"
+field = "ics"
+match = "exact"
+pattern = "Technodrome"
+weight = 0.9
+source = "Conpot default template, S7 system name"
+
+[[rule]]
+id = "conpot-s7-plant-id"
+honeypot = "Conpot"
+field = "ics"
+match = "exact"
+pattern = "Mouser Factory"
+weight = 0.9
+source = "Conpot default template, S7 plant identification"
+
+[[rule]]
+id = "conpot-s7-serial"
+honeypot = "Conpot"
+field = "ics"
+match = "exact"
+pattern = "88111222"
+weight = 0.8
+source = "Conpot default template, S7 serial number"

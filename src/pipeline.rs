@@ -11,7 +11,7 @@ use crusade_core::model::Host;
 use crusade_enrich::{enrich_host, EnrichConfig, GeoAsnDb, Screenshotter};
 use crusade_probe::{Fingerprints, ProbeConfig};
 use crusade_store::Store;
-use crusade_vuln::VulnDb;
+use crusade_vuln::{HoneypotRules, HoneypotScorer, PortStats, VulnDb};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::Path;
@@ -23,6 +23,7 @@ pub struct Datasets {
     pub fingerprints: Fingerprints,
     pub geo: GeoAsnDb,
     pub vulns: VulnDb,
+    pub honeypot_rules: HoneypotRules,
 }
 
 impl Datasets {
@@ -44,11 +45,43 @@ impl Datasets {
             VulnDb::new()
         });
 
+        let honeypot_rules = load_honeypot_rules(dir);
+
         Ok(Datasets {
             fingerprints,
             geo,
             vulns,
+            honeypot_rules,
         })
+    }
+}
+
+/// `<data dir>/honeypot-rules.toml` when present and valid, else the built-in
+/// pack.
+pub fn load_honeypot_rules(dir: &Path) -> HoneypotRules {
+    let path = dir.join("honeypot-rules.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => HoneypotRules::parse(&text).unwrap_or_else(|e| {
+            warn!(
+                "{} invalid ({e:#}); using built-in honeypot rules",
+                path.display()
+            );
+            HoneypotRules::builtin()
+        }),
+        Err(_) => HoneypotRules::builtin(),
+    }
+}
+
+/// A scorer over the given rules, with port co-occurrence statistics learned
+/// from the current index.
+pub fn honeypot_scorer(rules: &HoneypotRules, store: &Store) -> HoneypotScorer {
+    let scorer = HoneypotScorer::new(rules.clone());
+    match store.tcp_port_sets() {
+        Ok(sets) => scorer.with_port_stats(PortStats::from_port_sets(&sets)),
+        Err(e) => {
+            warn!("port statistics unavailable ({e:#}); skipping port-set signal");
+            scorer
+        }
     }
 }
 
@@ -152,6 +185,7 @@ pub async fn process(
         reverse_dns: true,
     };
     let timeout = cfg.connect_timeout();
+    let honeypot = honeypot_scorer(&datasets.honeypot_rules, store);
 
     let mut hosts = Vec::new();
     for (ip, (mut tcp, mut udp)) in by_host {
@@ -186,6 +220,7 @@ pub async fn process(
         // Enrich (geo/ASN + reverse DNS), then tag.
         enrich_host(&mut host, &datasets.geo, &enrich_cfg).await;
         datasets.vulns.tag_host(&mut host);
+        honeypot.apply(&mut host);
 
         // Screenshots of web services (best-effort), saved under data/screens.
         if let Some(shotter) = &shots {

@@ -36,9 +36,33 @@ pub struct Host {
     pub services: Vec<Service>,
     #[serde(default)]
     pub tags: Vec<Tag>,
+    /// Passive honeypot/deception assessment; `None` until scored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub honeypot: Option<HoneypotAssessment>,
     /// When this host was most recently scanned.
     #[serde(with = "time::serde::rfc3339")]
     pub last_seen: OffsetDateTime,
+}
+
+/// How likely a host is to be a honeypot, with the evidence behind the score.
+///
+/// Scores combine independent signals with a noisy-OR, so each piece of
+/// evidence carries its own weight in `[0, 1]` and the overall score is
+/// `1 - prod(1 - weight)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HoneypotAssessment {
+    pub score: f32,
+    #[serde(default)]
+    pub evidence: Vec<HoneypotEvidence>,
+}
+
+/// One signal that contributed to a [`HoneypotAssessment`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HoneypotEvidence {
+    /// Stable signal id, e.g. `rule:cowrie-default-ssh` or `ssh-kex-anachronism`.
+    pub signal: String,
+    pub weight: f32,
+    pub detail: String,
 }
 
 impl Host {
@@ -55,6 +79,7 @@ impl Host {
             longitude: None,
             services: Vec::new(),
             tags: Vec::new(),
+            honeypot: None,
             last_seen: OffsetDateTime::now_utc(),
         }
     }

@@ -243,6 +243,16 @@ pub fn compile(query: &Query) -> Compiled {
                     val(&filter.value),
                 );
             }
+            Field::Honeypot => {
+                // Unscored hosts count as score 0, so `-honeypot:true` keeps them.
+                let (cond, v) = match filter.value {
+                    FilterValue::Bool(true) => ("COALESCE(hosts.honeypot, 0) >= ?", 0.5),
+                    FilterValue::Bool(false) => ("COALESCE(hosts.honeypot, 0) < ?", 0.5),
+                    FilterValue::Int(n) => ("COALESCE(hosts.honeypot, 0) >= ?", n as f64 / 100.0),
+                    _ => ("COALESCE(hosts.honeypot, 0) >= ?", 0.5),
+                };
+                push_host_col(&mut clauses, &mut params, neg, cond, Value::Real(v));
+            }
             Field::HasExploit => {
                 // Exploit availability rides on an `exploit-available` tag emitted
                 // by the vuln crate when a CVE maps to a known public exploit.

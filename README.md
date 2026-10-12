@@ -57,6 +57,11 @@ crusade monitor --interval 3600 --stale 86400     # rescan + alert on new ports/
 crusade alerts                                    # recent alerts (webhook/SMTP via [alert])
 crusade enqueue 10.0.0.0/24 --ics && crusade worker   # distributed scan queue
 crusade scan 198.51.100.0/24 --screenshot         # capture web-UI screenshots (needs Chrome)
+
+# v5: honeypot-aware results
+crusade search 'port:22 -honeypot:true'           # hide likely honeypots
+crusade search -- -honeypot:true                  # `--` when a query starts with '-'
+crusade rescore                                   # recompute honeypot scores offline
 ```
 
 Each probed service can carry a JARM fingerprint, favicon mmh3 hash, TLS
@@ -82,7 +87,7 @@ language.
 
 Filters: `port asn org country city net product version hostname ssl.cn
 transport jarm http.favicon.hash ssh.hostkey hassh tag vuln has_vuln
-ics has_ics auth has_exploit has_screenshot before after`; a leading `-` negates; bare/quoted words are
+ics has_ics auth has_exploit has_screenshot honeypot before after`; a leading `-` negates; bare/quoted words are
 full-text over banners, titles, technologies and SSH banners. Unknown keys fall
 back to free text. `net:` accepts IPv4/IPv6 CIDRs; `http.favicon.hash:` takes
 the signed mmh3 integer (the Shodan convention) for finding the same deployment.
@@ -92,10 +97,22 @@ whose detected CVEs have a known public exploit (Exploit-DB / Metasploit). Auth
 posture is observed from each service's own response — Crusade never submits
 credentials or attempts to authenticate.
 
+`honeypot:true|false` or `honeypot:<0-100>` filters on a passive honeypot
+score. Each host is scored from data already collected: a signature pack for
+default honeypot configurations (`crates/vuln/rules/honeypot-rules.toml`, overridable at
+`<data dir>/honeypot-rules.toml`), SSH banners that claim an OpenSSH release
+older than the key-exchange algorithms offered, implausible ICS/IT service
+mixes, ICS on cloud ASNs, contradictory OS stacks, ports that accept but never
+speak, and port pairs that almost never co-occur across the index. Scores and
+their evidence appear in `crusade host` and the web UI; hosts at 50% or more
+are tagged `honeypot`. Use `-honeypot:true` to keep honeypots out of exposure
+statistics.
+
 ## Data sources (all free, no keys)
 
 iptoasn.com ip2asn tables · DB-IP City Lite · nmap-service-probes (ships with
-nmap) · NVD JSON CVE feeds · CISA KEV catalog · crt.sh certificate transparency.
+nmap) · NVD CVE JSON 2.0 feeds (fetched by `update-data`) · CISA KEV catalog ·
+crt.sh certificate transparency.
 
 ## License
 

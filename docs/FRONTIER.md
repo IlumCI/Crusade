@@ -101,9 +101,12 @@ GeoIP and screenshots today).
 
 ## 5. Ordering
 
-1. V1 (correctness: CVE matching is currently non-functional).
+1. V1 (correctness: CVE matching is currently non-functional). **Done.**
 2. Honeypot stage 1 + D2 co-occurrence model (shared statistics; makes the
-   existing `-tag:honeypot` README example real).
+   existing `-tag:honeypot` README example real). **Honeypot stage 1 done**
+   (`crates/vuln/src/honeypot.rs`, `honeypot:` filter, `crusade rescore`);
+   the port co-occurrence statistics exist and are used for scoring, not yet
+   for D2 port prediction.
 3. D3, D4, D1 (engine core).
 4. M2 + V2, then M3 (shared embedding/LLM runtime).
 5. D6 IPv6 pipeline, D8 QUIC, D9 ZMap fields.

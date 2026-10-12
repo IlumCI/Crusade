@@ -16,6 +16,26 @@ use std::path::Path;
 
 pub use compile::{compile, Compiled};
 
+/// Bring databases created by older versions up to the current schema.
+/// `CREATE TABLE IF NOT EXISTS` never adds columns, so new ones go here.
+fn migrate(conn: &Connection) -> Result<()> {
+    let has_column = |table: &str, col: &str| -> Result<bool> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for n in names {
+            if n? == col {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    if !has_column("hosts", "honeypot")? {
+        conn.execute_batch("ALTER TABLE hosts ADD COLUMN honeypot REAL")?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_hosts_honeypot ON hosts(honeypot)")?;
+    Ok(())
+}
+
 /// A handle to the Crusade database.
 pub struct Store {
     conn: Connection,
@@ -82,7 +102,46 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(include_str!("schema.sql"))
             .context("applying schema")?;
+        migrate(&conn).context("migrating schema")?;
         Ok(Store { conn })
+    }
+
+    /// Rewrite a host's derived data (doc, honeypot score, tags) without
+    /// touching services or appending history. Used when re-scoring.
+    pub fn update_derived(&mut self, host: &Host) -> Result<()> {
+        let ip = host.ip.to_string();
+        let doc = serde_json::to_string(host)?;
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE hosts SET doc = ?2, honeypot = ?3 WHERE ip = ?1",
+            params![ip, doc, host.honeypot.as_ref().map(|h| f64::from(h.score))],
+        )?;
+        tx.execute("DELETE FROM tags WHERE ip = ?1", params![ip])?;
+        for tag in &host.tags {
+            tx.execute(
+                "INSERT OR IGNORE INTO tags (ip, name, cve, detail) VALUES (?1,?2,?3,?4)",
+                params![ip, tag.name, tag.cve, tag.detail],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// TCP port sets of every indexed host, for co-occurrence statistics.
+    pub fn tcp_port_sets(&self) -> Result<Vec<Vec<u16>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ip, group_concat(port) FROM services WHERE transport = 'tcp' GROUP BY ip",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let ports = row?
+                .split(',')
+                .filter_map(|p| p.parse::<u16>().ok())
+                .collect();
+            out.push(ports);
+        }
+        Ok(out)
     }
 
     /// Insert or update a host and all of its services atomically.
@@ -100,16 +159,17 @@ impl Store {
         let tx = self.conn.transaction()?;
 
         tx.execute(
-            "INSERT INTO hosts (ip, asn, org, country, city, latitude, longitude, hostnames, ip_sort, last_seen, doc)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            "INSERT INTO hosts (ip, asn, org, country, city, latitude, longitude, hostnames, ip_sort, last_seen, doc, honeypot)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
              ON CONFLICT(ip) DO UPDATE SET
                asn=excluded.asn, org=excluded.org, country=excluded.country,
                city=excluded.city, latitude=excluded.latitude, longitude=excluded.longitude,
                hostnames=excluded.hostnames, ip_sort=excluded.ip_sort,
-               last_seen=excluded.last_seen, doc=excluded.doc",
+               last_seen=excluded.last_seen, doc=excluded.doc, honeypot=excluded.honeypot",
             params![
                 ip, host.asn, host.org, host.country, host.city,
-                host.latitude, host.longitude, hostnames, ip_sort, last_seen, doc
+                host.latitude, host.longitude, hostnames, ip_sort, last_seen, doc,
+                host.honeypot.as_ref().map(|h| f64::from(h.score))
             ],
         )?;
 

@@ -323,11 +323,34 @@ pub struct HostTemplate {
     pub last_seen: String,
     pub tags: Vec<TagView>,
     pub services: Vec<ServiceView>,
+    /// Honeypot score as a percentage, when the host has been scored.
+    pub honeypot_pct: Option<u32>,
+    pub honeypot_flagged: bool,
+    /// (signal, weight %, detail) for each piece of honeypot evidence.
+    pub honeypot_evidence: Vec<(String, u32, String)>,
 }
 
 impl From<&Host> for HostTemplate {
     fn from(h: &Host) -> Self {
+        let hp = h.honeypot.as_ref();
         HostTemplate {
+            honeypot_pct: hp.map(|a| (a.score * 100.0).round() as u32),
+            // The scorer tags hosts at or above its threshold.
+            honeypot_flagged: h.tags.iter().any(|t| t.name == "honeypot"),
+            honeypot_evidence: hp
+                .map(|a| {
+                    a.evidence
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.signal.clone(),
+                                (e.weight * 100.0).round() as u32,
+                                e.detail.clone(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             ip: h.ip.to_string(),
             hostnames: h.hostnames.clone(),
             domains: h.domains.clone(),

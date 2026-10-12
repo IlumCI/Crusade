@@ -12,3 +12,4 @@ serde_json.workspace = true
 tracing.workspace = true
 time.workspace = true
 csv = "1"
+toml.workspace = true

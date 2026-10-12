@@ -276,3 +276,73 @@ fn job_queue_enqueue_claim_finish() {
     store.finish_job(j2.id, false, "timeout").unwrap();
     assert_eq!(store.job_counts().unwrap(), (0, 0, 1, 1));
 }
+
+#[test]
+fn honeypot_filter_and_port_sets() {
+    use crusade_core::model::{HoneypotAssessment, HoneypotEvidence};
+    let mut store = Store::open_in_memory().unwrap();
+    let mut hp = host_with("192.0.2.10", 22, "OpenSSH");
+    hp.honeypot = Some(HoneypotAssessment {
+        score: 0.9,
+        evidence: vec![HoneypotEvidence {
+            signal: "rule:test".into(),
+            weight: 0.9,
+            detail: "test".into(),
+        }],
+    });
+    let mut weak = host_with("192.0.2.11", 22, "OpenSSH");
+    weak.honeypot = Some(HoneypotAssessment {
+        score: 0.3,
+        evidence: vec![],
+    });
+    let plain = host_with("192.0.2.12", 22, "OpenSSH");
+    for h in [&hp, &weak, &plain] {
+        store.upsert_host(h).unwrap();
+    }
+    let ips = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .search(&parse(q).unwrap(), 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.ip.to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(ips("honeypot:true"), vec!["192.0.2.10"]);
+    assert_eq!(ips("-honeypot:true"), vec!["192.0.2.11", "192.0.2.12"]);
+    assert_eq!(ips("honeypot:false"), vec!["192.0.2.11", "192.0.2.12"]);
+    assert_eq!(ips("honeypot:25"), vec!["192.0.2.10", "192.0.2.11"]);
+
+    let back = store.get_host("192.0.2.10").unwrap().unwrap();
+    assert_eq!(back.honeypot, hp.honeypot);
+    assert_eq!(store.tcp_port_sets().unwrap().len(), 3);
+}
+
+#[test]
+fn migrate_adds_honeypot_column_to_old_db() {
+    let dir = std::env::temp_dir().join(format!("crusade-migrate-{}", std::process::id()));
+    let _ = std::fs::remove_file(&dir);
+    {
+        let conn = rusqlite::Connection::open(&dir).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE hosts (ip TEXT PRIMARY KEY, asn INTEGER, org TEXT, country TEXT,
+             city TEXT, latitude REAL, longitude REAL, hostnames TEXT, ip_sort BLOB,
+             last_seen INTEGER NOT NULL, doc TEXT NOT NULL);",
+        )
+        .unwrap();
+    }
+    let mut store = Store::open(&dir).unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.20", 80, "nginx"))
+        .unwrap();
+    assert_eq!(
+        store
+            .search(&parse("-honeypot:true").unwrap(), 5, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(store);
+    let _ = std::fs::remove_file(&dir);
+}

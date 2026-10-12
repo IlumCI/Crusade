@@ -71,6 +71,7 @@ pub enum Field {
     Auth,
     /// `has_exploit:` — whether any attached CVE has a known public exploit.
     HasExploit,
+    Honeypot,
 }
 
 impl Field {
@@ -101,6 +102,7 @@ impl Field {
             "has_ics" => Field::HasIcs,
             "auth" => Field::Auth,
             "has_exploit" | "exploit" => Field::HasExploit,
+            "honeypot" | "honeyscore" => Field::Honeypot,
             _ => return None,
         })
     }
@@ -132,6 +134,7 @@ impl Field {
             Field::HasIcs => "has_ics",
             Field::Auth => "auth",
             Field::HasExploit => "has_exploit",
+            Field::Honeypot => "honeypot",
         }
     }
 }
@@ -274,6 +277,19 @@ fn parse_value(field: Field, raw: &str) -> Result<FilterValue, ParseError> {
                 }),
             }
         }
+        // `honeypot:true|false`, or `honeypot:N` = score at least N percent.
+        Field::Honeypot => match raw.to_ascii_lowercase().as_str() {
+            "true" | "yes" => Ok(FilterValue::Bool(true)),
+            "false" | "no" => Ok(FilterValue::Bool(false)),
+            other => match other.parse::<i64>() {
+                Ok(n) if (0..=100).contains(&n) => Ok(FilterValue::Int(n)),
+                _ => Err(ParseError::BadEnum {
+                    field: field.as_str(),
+                    value: raw.to_string(),
+                    allowed: "true, false, or a score threshold 0-100",
+                }),
+            },
+        },
         Field::Auth => match raw.to_ascii_lowercase().as_str() {
             "open" | "none" | "unauth" | "unauthenticated" | "no" => {
                 Ok(FilterValue::Text("open".into()))
@@ -578,5 +594,17 @@ mod tests {
         let s = q.to_string();
         let q2 = parse(&s).unwrap();
         assert_eq!(q, q2);
+    }
+
+    #[test]
+    fn honeypot_filter_values() {
+        let q = parse("-honeypot:true port:22").unwrap();
+        let hp = f(&q, Field::Honeypot);
+        assert!(hp.negate);
+        assert_eq!(hp.value, FilterValue::Bool(true));
+        let q = parse("honeyscore:80").unwrap();
+        assert_eq!(f(&q, Field::Honeypot).value, FilterValue::Int(80));
+        assert!(parse("honeypot:101").is_err());
+        assert!(parse("honeypot:maybe").is_err());
     }
 }

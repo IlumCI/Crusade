@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     hostnames   TEXT,           -- space-joined, for LIKE/FTS
     ip_sort     BLOB,           -- 16-byte big-endian IP, for net:/range queries
     last_seen   INTEGER NOT NULL, -- unix seconds
-    doc         TEXT NOT NULL   -- full Host JSON
+    doc         TEXT NOT NULL,  -- full Host JSON
+    honeypot    REAL            -- honeypot score 0..1, NULL = unscored
 );
 CREATE INDEX IF NOT EXISTS idx_hosts_asn     ON hosts(asn);
 CREATE INDEX IF NOT EXISTS idx_hosts_country ON hosts(country);
