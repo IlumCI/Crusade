@@ -4,10 +4,13 @@
 //! deliberately conservative, because a scanner is only a legitimate
 //! security-research tool when it refuses to misbehave:
 //!
-//!   * **Connect-and-read only.** We open ordinary TCP connections with
-//!     [`tokio::net::TcpStream`] and note whether the handshake completes. There
-//!     is no raw-socket SYN flooding, no spoofing, no exploitation — banner and
-//!     protocol probing lives in the sibling `probe` crate and also only reads.
+//!   * **Connect-and-read, or a single SYN.** [`TcpScanner`] opens ordinary TCP
+//!     connections with [`tokio::net::TcpStream`] and notes whether the
+//!     handshake completes. [`SynScanner`] instead sends one bare SYN per port
+//!     for fast discovery and lets the kernel RST the reply, so no half-open
+//!     connection is left on the target. Neither spoofs a source address,
+//!     floods, or sends a payload — banner and protocol probing lives in the
+//!     sibling `probe` crate and also only reads.
 //!   * **The blocklist is mandatory.** Every address, whether it arrives through
 //!     [`expand_targets`] or is handed straight to [`TcpScanner::scan`], is
 //!     checked against a [`Blocklist`] that *always* contains the reserved,
@@ -19,8 +22,11 @@
 //!     connections per second and a semaphore bounds in-flight connections, so
 //!     the default behaviour is gentle on both the network and the targets.
 //!
-//! Large internet-wide sweeps are expected to be run out-of-band with a
-//! sanctioned `masscan`/`zmap` deployment; this crate ingests their output via
+//! Wide discovery has three routes: the built-in [`SynScanner`] (stateless,
+//! needs `CAP_NET_RAW`, IPv4 only), the external [`masscan_discover`]
+//! front-end, or ingesting a sweep run elsewhere. All three re-apply the
+//! blocklist. Sweeps run out-of-band with a sanctioned `masscan`/`zmap`
+//! deployment; this crate ingests their output via
 //! [`parse_masscan_json`] / [`parse_zmap_csv`] and re-applies the blocklist with
 //! [`filter_blocked`] before anything downstream touches the results. For bulk
 //! SYN discovery the [`masscan_discover`] front-end shells out to the system
@@ -41,6 +47,7 @@ mod discovery;
 mod rate;
 mod scanner;
 mod sweep;
+mod syn;
 mod targets;
 mod udp;
 
@@ -49,5 +56,6 @@ pub use discovery::{masscan_discover, MasscanConfig};
 pub use rate::{RateLimiter, RateLimiterParams};
 pub use scanner::{ScanConfig, TcpScanner};
 pub use sweep::{filter_blocked, parse_masscan_json, parse_zmap_csv};
+pub use syn::{PortState, Reply, SynConfig, SynScanner};
 pub use targets::{expand_targets, MIN_V6_PREFIX};
 pub use udp::{default_udp_ports, udp_worklist};

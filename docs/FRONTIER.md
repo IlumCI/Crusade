@@ -109,7 +109,10 @@ GeoIP and screenshots today).
    for D2 port prediction.
 3. D3, D4, D1 (engine core). **D3 done** (`grab::grab_adaptive`); **D4 done**
    (`crates/core/src/lifecycle.rs`, `[lifecycle]` config, scoped rescans in
-   `monitor`). D1 pending.
+   `monitor`); **stateless SYN engine done** (`crates/scan/src/syn.rs`,
+   `--discovery-syn`, ~83k probes/s measured vs 166 for connect). D1's tiered
+   scheduler and D2's port prediction still pending, as is the data layer's
+   remaining slow path (faceting the whole index).
 4. M2 + V2, then M3 (shared embedding/LLM runtime). **M2 done**
    (`crates/embed`, `crusade similar`/`embed`, web `/similar` + per-service
    pivots); V2 and M3 pending.

@@ -62,6 +62,14 @@ enum Command {
         /// (needs the `masscan` binary; still honors the blocklist).
         #[arg(long)]
         discovery_masscan: bool,
+        /// Use the built-in stateless SYN scanner for discovery: one bare SYN
+        /// per port, no handshake, ~500x the connect scanner against hosts
+        /// that do not answer. Needs CAP_NET_RAW and IPv4 targets.
+        #[arg(long, conflicts_with = "discovery_masscan")]
+        discovery_syn: bool,
+        /// SYN probes/sec when --discovery-syn is set.
+        #[arg(long, default_value_t = 20_000.0)]
+        syn_rate: f64,
         /// masscan packets/sec when --discovery-masscan is set.
         #[arg(long, default_value_t = 1000)]
         masscan_rate: u32,
@@ -247,6 +255,8 @@ async fn main() -> Result<()> {
             udp_ports,
             discovery_masscan,
             masscan_rate,
+            discovery_syn,
+            syn_rate,
             allow_private,
         } => {
             cmd_scan(
@@ -260,6 +270,8 @@ async fn main() -> Result<()> {
                     udp_ports,
                     discovery_masscan,
                     masscan_rate,
+                    discovery_syn,
+                    syn_rate,
                     allow_private,
                 },
             )
@@ -340,6 +352,8 @@ struct ScanOpts {
     udp_ports: Option<Vec<u16>>,
     discovery_masscan: bool,
     masscan_rate: u32,
+    discovery_syn: bool,
+    syn_rate: f64,
     allow_private: bool,
 }
 
@@ -358,8 +372,11 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
     }
     eprintln!("Scanning {} address(es)…", targets.len());
 
-    // TCP discovery: built-in connect scanner, or the masscan front-end.
-    let open = if opts.discovery_masscan {
+    // TCP discovery: stateless SYN, the masscan front-end, or the built-in
+    // connect scanner.
+    let open = if opts.discovery_syn {
+        syn_discover(&targets, &tcp_ports, opts.syn_rate, &bl, opts.allow_private).await?
+    } else if opts.discovery_masscan {
         let mcfg = crusade_scan::MasscanConfig {
             rate: opts.masscan_rate,
             extra_args: vec![],
@@ -483,6 +500,51 @@ async fn run_scan_once(
     )
     .await?;
     Ok(hosts.len())
+}
+
+/// Stateless SYN discovery, falling back to nothing: the caller gets a clear
+/// error rather than a silent slow path, since the two engines differ by
+/// orders of magnitude and a silent downgrade would be misleading.
+async fn syn_discover(
+    targets: &[IpAddr],
+    ports: &[u16],
+    rate: f64,
+    bl: &Blocklist,
+    allow_private: bool,
+) -> Result<Vec<(IpAddr, u16)>> {
+    let v4: Vec<std::net::Ipv4Addr> = targets
+        .iter()
+        .filter_map(|ip| match ip {
+            IpAddr::V4(a) => Some(*a),
+            IpAddr::V6(_) => None,
+        })
+        .collect();
+    let skipped = targets.len() - v4.len();
+    if skipped > 0 {
+        eprintln!("--discovery-syn is IPv4-only; skipping {skipped} IPv6 target(s)");
+    }
+    if v4.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cfg = crusade_scan::SynConfig {
+        rate: RateLimiterParams {
+            conn_per_sec: rate,
+            burst: rate,
+            concurrency: 1,
+        },
+        allow_private,
+        ..Default::default()
+    };
+    let scanner = crusade_scan::SynScanner::new(cfg, bl.clone()).context(
+        "opening raw sockets for --discovery-syn (needs CAP_NET_RAW: run as root or \
+         grant it with `setcap cap_net_raw+ep $(which crusade)`)",
+    )?;
+    eprintln!(
+        "SYN discovery: {} address(es) x {} port(s) at {rate:.0}/s",
+        v4.len(),
+        ports.len()
+    );
+    Ok(scanner.scan(&v4, ports).await?)
 }
 
 async fn cmd_sweep_ingest(
@@ -1096,6 +1158,10 @@ async fn cmd_worker(
             udp_ports: None,
             discovery_masscan: false,
             masscan_rate: 1000,
+            // Workers use the connect scanner: they are meant to run several
+            // to a host, and raw sockets need a capability a worker may lack.
+            discovery_syn: false,
+            syn_rate: 20_000.0,
             allow_private,
         };
         eprintln!("worker {worker_id}: job {} → {}", job.id, job.target);

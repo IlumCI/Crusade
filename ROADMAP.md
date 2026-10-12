@@ -65,9 +65,11 @@ of the UI, alert transports beyond webhook/email (PagerDuty, etc.).
 Done so far: NVD JSON 2.0 migration (CVE matching worked on no fresh install
 before), passive honeypot scoring (`honeypot:` + `crusade rescore`),
 protocol-agnostic probing on any port, CPU-only semantic search
-(`crusade similar`/`embed`), and the service lifecycle (pending → evicted →
-forgotten, with `service-gone` alerts). See `docs/FRONTIER.md` for what
-remains.
+(`crusade similar`/`embed`), the service lifecycle (pending → evicted →
+forgotten, with `service-gone` alerts), a 25x faster store (quadratic FTS
+delete fixed, batched ingest, delta history, capped counts), and a stateless
+SYN discovery engine (`--discovery-syn`, ~500x the connect scanner against
+unresponsive targets). See `docs/FRONTIER.md` for what remains.
 
 ## v5 — PLANNED
 Frontier upgrade derived from a 2026 literature survey: tiered + predictive

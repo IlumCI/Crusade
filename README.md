@@ -21,11 +21,13 @@ Built-in safeguards, on by default:
 - **Mandatory blocklist.** Private/reserved ranges are hard-coded skips in code
   and can never be bypassed from the CLI. Add further opt-out networks to
   `blocklist.txt` (or `crusade blocklist add <cidr>`).
-- **Connect-and-read only.** The only bytes Crusade sends are a benign HTTP
-  `GET` and a TLS handshake. No exploit payloads, no auth attempts. Protocols
-  are identified on any port, not assumed from the port number: a silent
-  service gets the GET after a 2 s wait, and a TLS handshake follows when the
-  reply indicates TLS.
+- **Connect-and-read, or a single SYN.** The only bytes Crusade sends are a
+  benign HTTP `GET`, a TLS handshake, and (with `--discovery-syn`) one bare SYN
+  per port that the kernel then RSTs, leaving no half-open connection on the
+  target. No exploit payloads, no auth attempts, no source-address spoofing.
+  Protocols are identified on any port, not assumed from the port number: a
+  silent service gets the GET after a 2 s wait, and a TLS handshake follows when
+  the reply indicates TLS.
 - **Conservative rate limits.** Targeted scans are gently rate-limited.
   IPv4-wide sweep mode is **scaffolded but intentionally not run from a normal
   machine**: it requires a sanctioned scanning VPS, an explicit high rate set in
@@ -137,6 +139,40 @@ speak, and port pairs that almost never co-occur across the index. Scores and
 their evidence appear in `crusade host` and the web UI; hosts at 50% or more
 are tagged `honeypot`. Use `-honeypot:true` to keep honeypots out of exposure
 statistics.
+
+## Discovery engines
+
+| Engine | How | Needs |
+|--------|-----|-------|
+| connect (default) | full TCP handshake per port | nothing |
+| `--discovery-syn` | one stateless SYN per port | `CAP_NET_RAW`, IPv4 |
+| `--discovery-masscan` | shells out to `masscan` | `masscan` binary |
+| `crusade sweep ingest` | masscan/zmap output from elsewhere | a sanctioned sweep host |
+
+The connect scanner is bounded by `concurrency / timeout` whenever a target
+does not answer — the common case on the open internet. At Crusade's defaults
+(500 concurrent, 3 s timeout) that is ~167 ports/s, and measured 166. The
+stateless SYN scanner (`crates/scan/src/syn.rs`) is bounded only by the send
+rate, measuring ~83,000 probes/s from one thread on a 4-core container:
+
+```
+cargo run --release -p crusade-scan --example discovery_bench -- 40000 20000 1000000 50 50
+connect:  120.14s        166 ports/s     # 20k unresponsive ports, 3s timeout
+syn:        0.24s      83065 ports/s
+```
+
+That is the difference between ~258 days and ~12 hours for a single port
+across routable IPv4. It follows ZMap (Durumeric et al., USENIX Security
+2013): the SYN's sequence number is a keyed hash of the target tuple, so a
+reply is validated from the packet itself and no per-target state is kept.
+Discovery only finds open ports; banner grabbing is a separate ordinary
+connection to the ports found, so app-layer work happens only where something
+answered.
+
+**Running a sweep is still an operational decision, not just a flag.** A host
+whose provider permits scanning, a published abuse contact, reverse DNS
+identity and a working opt-out are what make wide scanning legitimate; see
+*Responsible use* above.
 
 ## Scale and performance
 
