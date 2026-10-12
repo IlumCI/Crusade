@@ -140,6 +140,44 @@ their evidence appear in `crusade host` and the web UI; hosts at 50% or more
 are tagged `honeypot`. Use `-honeypot:true` to keep honeypots out of exposure
 statistics.
 
+## Predictive discovery
+
+Probing every port of every host is unaffordable — 65,535 ports across a /16
+is 4.3 billion probes — but services are not independent. A host with 3306
+open probably also runs 22; a host with 102 open is industrial equipment and
+almost certainly runs neither. `crusade scan --predict <n>` exploits that: a
+cheap seed pass finds one service, then the index says where that host's other
+services are likely to be, and only those get probed.
+
+```
+crusade scan 203.0.113.0/24 --predict 16
+```
+
+The model (`crates/core/src/ports.rs`) learns port and port-pair frequencies
+from *your* index, so it describes the population you actually scan. Each
+observed port contributes its own conditional and they combine with a
+noisy-OR, so evidence accumulates: a port predicted by several observations
+outranks one predicted by a single weak signal. Nothing is suggested without
+at least 20 supporting hosts, and the whole phase is skipped below 200 indexed
+hosts — the model says nothing rather than guessing. `--predict` is a cap, not
+a quota: asking for 32 when only 12 ports have evidence costs 12 probes.
+
+Evaluated with a train/test split over a synthetic population of archetypes
+(`cargo run --release -p crusade-core --example predict_eval`):
+
+| strategy | probes | recall |
+|---|---|---|
+| 8 seed ports only | 80,000 | 62.8% |
+| seed + predict 16 | 149,033 | **84.8%** |
+| every port | 655,350,000 | 100% |
+
+Prediction adds 22 points of recall for 1.9x the seed probes, reaching 84.8%
+of exhaustive recall with ~4,400x less bandwidth. The honest limit is the
+first phase: 8,631 of 10,000 test hosts answered on a seed port at all, and
+the rest are invisible to any two-phase scan however good the prediction is.
+This follows GPS (Izhikevich et al., SIGCOMM 2022, arXiv:2303.00895), which
+reports 92.5% of services at 131x less bandwidth against real IPv4.
+
 ## Discovery engines
 
 | Engine | How | Needs |

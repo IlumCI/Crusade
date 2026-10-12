@@ -72,7 +72,8 @@ SYN discovery engine (`--discovery-syn`, ~500x the connect scanner against
 unresponsive targets), plus lazy dataset loading and caching (a scan that
 finds nothing went from 7.6s to 8ms; CVE lookup from a 6s parse to a 1ms
 open), and retention/archiving (usage-aware selection, gzipped archives,
-automatic cleanup at a size limit). See `docs/FRONTIER.md` for what remains.
+automatic cleanup at a size limit), and GPS-style predictive port discovery
+(`--predict`). See `docs/FRONTIER.md` for what remains.
 
 ## v5 — PLANNED
 Frontier upgrade derived from a 2026 literature survey: tiered + predictive

@@ -17,10 +17,12 @@
 //!   (pairs of ports that almost never appear together elsewhere);
 //! * hosts that accept connections on many ports but say nothing on them.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use anyhow::Context;
-use crusade_core::{HoneypotAssessment, HoneypotEvidence, Host, Service, Tag, Transport};
+use crusade_core::{
+    HoneypotAssessment, HoneypotEvidence, Host, PortModel, Service, Tag, Transport,
+};
 use serde::Deserialize;
 
 use crate::cve::version_cmp;
@@ -158,87 +160,6 @@ fn field_values(svc: &Service, field: RuleField) -> Vec<&str> {
 // Port co-occurrence model
 // ---------------------------------------------------------------------------
 
-/// Minimum indexed hosts before port co-occurrence is trusted.
-const PORT_STATS_MIN_HOSTS: u64 = 200;
-/// Minimum hosts carrying a port before its conditionals are trusted.
-const PORT_STATS_MIN_SUPPORT: u64 = 20;
-/// A pair is implausible when each port co-occurs with the other on fewer than
-/// this fraction of the hosts that carry it.
-const PORT_PAIR_MAX_COND: f64 = 0.02;
-
-/// Port and port-pair frequencies over the indexed population: the
-/// co-occurrence statistics GPS (Izhikevich et al., SIGCOMM 2022) uses for
-/// prediction, used here in reverse to find port sets that real hosts
-/// essentially never have.
-#[derive(Debug, Clone, Default)]
-pub struct PortStats {
-    hosts: u64,
-    single: HashMap<u16, u64>,
-    pairs: HashMap<(u16, u16), u64>,
-}
-
-impl PortStats {
-    /// Build from one TCP port list per host.
-    pub fn from_port_sets<I, P>(sets: I) -> Self
-    where
-        I: IntoIterator<Item = P>,
-        P: AsRef<[u16]>,
-    {
-        let mut st = PortStats::default();
-        for set in sets {
-            let ports: BTreeSet<u16> = set.as_ref().iter().copied().collect();
-            if ports.is_empty() {
-                continue;
-            }
-            st.hosts += 1;
-            let v: Vec<u16> = ports.into_iter().collect();
-            for (i, &a) in v.iter().enumerate() {
-                *st.single.entry(a).or_default() += 1;
-                for &b in &v[i + 1..] {
-                    *st.pairs.entry((a, b)).or_default() += 1;
-                }
-            }
-        }
-        st
-    }
-
-    pub fn hosts(&self) -> u64 {
-        self.hosts
-    }
-
-    /// Pairs in `ports` that the population says almost never co-occur.
-    /// Empty when the population is too small to say.
-    pub fn implausible_pairs(&self, ports: &[u16]) -> Vec<(u16, u16)> {
-        if self.hosts < PORT_STATS_MIN_HOSTS {
-            return Vec::new();
-        }
-        let v: Vec<u16> = ports
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let mut out = Vec::new();
-        for (i, &a) in v.iter().enumerate() {
-            for &b in &v[i + 1..] {
-                let (Some(&na), Some(&nb)) = (self.single.get(&a), self.single.get(&b)) else {
-                    continue;
-                };
-                if na < PORT_STATS_MIN_SUPPORT || nb < PORT_STATS_MIN_SUPPORT {
-                    continue;
-                }
-                let both = self.pairs.get(&(a, b)).copied().unwrap_or(0) as f64;
-                if both / (na as f64) < PORT_PAIR_MAX_COND
-                    && both / (nb as f64) < PORT_PAIR_MAX_COND
-                {
-                    out.push((a, b));
-                }
-            }
-        }
-        out
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Scorer
 // ---------------------------------------------------------------------------
@@ -302,7 +223,7 @@ const WINDOWS_MARKERS: &[&str] = &[
 #[derive(Debug, Clone, Default)]
 pub struct HoneypotScorer {
     rules: HoneypotRules,
-    ports: Option<PortStats>,
+    ports: Option<PortModel>,
 }
 
 impl HoneypotScorer {
@@ -311,7 +232,7 @@ impl HoneypotScorer {
     }
 
     /// Enable the port co-occurrence signal.
-    pub fn with_port_stats(mut self, stats: PortStats) -> Self {
+    pub fn with_port_stats(mut self, stats: PortModel) -> Self {
         self.ports = Some(stats);
         self
     }
@@ -540,7 +461,7 @@ fn silent_ports_signal(host: &Host, ev: &mut Vec<HoneypotEvidence>) {
     }
 }
 
-fn port_pair_signal(host: &Host, stats: &PortStats, ev: &mut Vec<HoneypotEvidence>) {
+fn port_pair_signal(host: &Host, stats: &PortModel, ev: &mut Vec<HoneypotEvidence>) {
     let ports: Vec<u16> = host
         .services
         .iter()
@@ -711,12 +632,12 @@ mod tests {
         sets.extend(std::iter::repeat_n(vec![80, 443], 300));
         sets.extend(std::iter::repeat_n(vec![22], 100));
         sets.extend(std::iter::repeat_n(vec![102], 30));
-        let stats = PortStats::from_port_sets(&sets);
+        let stats = PortModel::from_port_sets(&sets);
         assert_eq!(stats.hosts(), 430);
         assert!(stats.implausible_pairs(&[80, 443]).is_empty());
         assert_eq!(stats.implausible_pairs(&[22, 102, 443]).len(), 3);
 
-        let small = PortStats::from_port_sets(&sets[..50]);
+        let small = PortModel::from_port_sets(&sets[..50]);
         assert!(small.implausible_pairs(&[22, 102]).is_empty());
 
         let mut h = host();

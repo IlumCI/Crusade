@@ -19,6 +19,7 @@ use crusade_scan::{
     RateLimiterParams, ScanConfig, TcpScanner,
 };
 use crusade_store::Store;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,6 +72,11 @@ enum Command {
         /// SYN probes/sec when --discovery-syn is set.
         #[arg(long, default_value_t = 20_000.0)]
         syn_rate: f64,
+        /// After the first pass, probe this many further ports per host,
+        /// chosen by what the index says co-occurs with what the host already
+        /// answered. 0 disables the predictive phase.
+        #[arg(long, default_value_t = 0)]
+        predict: usize,
         /// masscan packets/sec when --discovery-masscan is set.
         #[arg(long, default_value_t = 1000)]
         masscan_rate: u32,
@@ -268,6 +274,7 @@ async fn main() -> Result<()> {
             masscan_rate,
             discovery_syn,
             syn_rate,
+            predict,
             allow_private,
         } => {
             cmd_scan(
@@ -283,6 +290,7 @@ async fn main() -> Result<()> {
                     masscan_rate,
                     discovery_syn,
                     syn_rate,
+                    predict,
                     allow_private,
                 },
             )
@@ -366,6 +374,7 @@ struct ScanOpts {
     masscan_rate: u32,
     discovery_syn: bool,
     syn_rate: f64,
+    predict: usize,
     allow_private: bool,
 }
 
@@ -376,7 +385,10 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
         println!("No scannable addresses (all blocked/reserved, or empty target).");
         return Ok(());
     }
-    let mut tcp_ports = opts.ports.unwrap_or_else(|| cfg.scan.default_ports.clone());
+    let mut tcp_ports = opts
+        .ports
+        .clone()
+        .unwrap_or_else(|| cfg.scan.default_ports.clone());
     if opts.ics {
         tcp_ports.extend_from_slice(crusade_probe::ics_ports_tcp());
         tcp_ports.sort_unstable();
@@ -386,34 +398,24 @@ async fn cmd_scan(cfg: &Config, target: &str, opts: ScanOpts) -> Result<()> {
 
     // TCP discovery: stateless SYN, the masscan front-end, or the built-in
     // connect scanner.
-    let open = if opts.discovery_syn {
-        syn_discover(&targets, &tcp_ports, opts.syn_rate, &bl, opts.allow_private).await?
-    } else if opts.discovery_masscan {
-        let mcfg = crusade_scan::MasscanConfig {
-            rate: opts.masscan_rate,
-            extra_args: vec![],
-        };
-        crusade_scan::masscan_discover(&targets, &tcp_ports, &mcfg, &bl)
-            .await
-            .context("masscan discovery")?
-    } else {
-        let scan_cfg = ScanConfig {
-            ports: tcp_ports,
-            connect_timeout: cfg.connect_timeout(),
-            rate: RateLimiterParams {
-                conn_per_sec: cfg.scan.rate_per_sec,
-                burst: cfg.scan.rate_per_sec,
-                concurrency: cfg.scan.max_concurrent,
-            },
-            allow_private: opts.allow_private,
-        };
-        TcpScanner::new(scan_cfg, bl.clone()).scan(&targets).await
-    };
+    let mut open = discover_tcp(cfg, &targets, &tcp_ports, &opts, &bl).await?;
     eprintln!("Found {} open TCP port(s); probing…", open.len());
+
+    // Predictive second phase: ask the index which other ports a host like
+    // this tends to have, and probe only those.
+    if opts.predict > 0 && !open.is_empty() {
+        let extra = predict_phase(cfg, &open, &tcp_ports, opts.predict, &opts, &bl).await?;
+        if !extra.is_empty() {
+            eprintln!("Prediction found {} further open port(s).", extra.len());
+            open.extend(extra);
+            open.sort_unstable();
+            open.dedup();
+        }
+    }
 
     // UDP worklist (if --udp, explicit --udp-ports, or ICS UDP ports via --ics).
     let udp = if opts.udp || opts.udp_ports.is_some() || opts.ics {
-        let mut uports = opts.udp_ports.unwrap_or_else(|| {
+        let mut uports = opts.udp_ports.clone().unwrap_or_else(|| {
             if opts.udp {
                 crusade_scan::default_udp_ports()
             } else {
@@ -513,6 +515,117 @@ async fn run_scan_once(
     )
     .await?;
     Ok(hosts.len())
+}
+
+/// One TCP discovery pass with whichever engine the options select.
+async fn discover_tcp(
+    cfg: &Config,
+    targets: &[IpAddr],
+    ports: &[u16],
+    opts: &ScanOpts,
+    bl: &Blocklist,
+) -> Result<Vec<(IpAddr, u16)>> {
+    if ports.is_empty() || targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    if opts.discovery_syn {
+        return syn_discover(targets, ports, opts.syn_rate, bl, opts.allow_private).await;
+    }
+    if opts.discovery_masscan {
+        let mcfg = crusade_scan::MasscanConfig {
+            rate: opts.masscan_rate,
+            extra_args: vec![],
+        };
+        return crusade_scan::masscan_discover(targets, ports, &mcfg, bl)
+            .await
+            .context("masscan discovery");
+    }
+    let scan_cfg = ScanConfig {
+        ports: ports.to_vec(),
+        connect_timeout: cfg.connect_timeout(),
+        rate: RateLimiterParams {
+            conn_per_sec: cfg.scan.rate_per_sec,
+            burst: cfg.scan.rate_per_sec,
+            concurrency: cfg.scan.max_concurrent,
+        },
+        allow_private: opts.allow_private,
+    };
+    Ok(TcpScanner::new(scan_cfg, bl.clone()).scan(targets).await)
+}
+
+/// Probe the ports the model expects, given what each host already answered.
+///
+/// This is the second phase of the GPS design (Izhikevich et al., SIGCOMM
+/// 2022): a cheap seed scan finds one service, then prediction says where the
+/// host's other services are, so the expensive breadth is spent only where
+/// something is actually listening. Each host gets its own predicted set, and
+/// hosts are grouped by that set so a shared prediction costs one pass.
+async fn predict_phase(
+    cfg: &Config,
+    found: &[(IpAddr, u16)],
+    already: &[u16],
+    top_k: usize,
+    opts: &ScanOpts,
+    bl: &Blocklist,
+) -> Result<Vec<(IpAddr, u16)>> {
+    let model = {
+        let store = Store::open(&cfg.database.path)?;
+        crusade_core::PortModel::from_port_sets(&store.tcp_port_sets()?)
+    };
+    if !model.is_usable() {
+        eprintln!(
+            "--predict needs a larger index to learn from ({} hosts so far, {} needed); \
+             skipping the predictive phase",
+            model.hosts(),
+            crusade_core::ports::MIN_HOSTS
+        );
+        return Ok(Vec::new());
+    }
+
+    // What each host answered in the seed phase.
+    let mut by_host: BTreeMap<IpAddr, Vec<u16>> = BTreeMap::new();
+    for (ip, port) in found {
+        by_host.entry(*ip).or_default().push(*port);
+    }
+
+    // Group hosts whose observations predict the same ports, so one pass
+    // covers all of them.
+    let mut groups: BTreeMap<Vec<u16>, Vec<IpAddr>> = BTreeMap::new();
+    for (ip, observed) in &by_host {
+        let predicted: Vec<u16> = model
+            .predict(observed, top_k)
+            .into_iter()
+            .map(|(port, _)| port)
+            .filter(|p| !already.contains(p))
+            .collect();
+        if !predicted.is_empty() {
+            groups.entry(predicted).or_default().push(*ip);
+        }
+    }
+    if groups.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Report what was actually predicted, not the budget: `top_k` is a cap,
+    // and the model only offers candidates it has evidence for, so asking for
+    // more than it knows costs nothing.
+    let probes: usize = groups
+        .iter()
+        .map(|(ports, ips)| ports.len() * ips.len())
+        .sum();
+    let widest = groups.keys().map(|p| p.len()).max().unwrap_or(0);
+    eprintln!(
+        "Predicting up to {widest} port(s) per host over {} host(s) \
+         ({probes} extra probes, vs {} to sweep every port)",
+        by_host.len(),
+        by_host.len() * 65_535
+    );
+
+    let mut extra = Vec::new();
+    for (ports, ips) in groups {
+        extra.extend(discover_tcp(cfg, &ips, &ports, opts, bl).await?);
+    }
+    Ok(extra)
 }
 
 /// Stateless SYN discovery, falling back to nothing: the caller gets a clear
@@ -1293,6 +1406,7 @@ async fn cmd_worker(
             // to a host, and raw sockets need a capability a worker may lack.
             discovery_syn: false,
             syn_rate: 20_000.0,
+            predict: 0,
             allow_private,
         };
         eprintln!("worker {worker_id}: job {} → {}", job.id, job.target);

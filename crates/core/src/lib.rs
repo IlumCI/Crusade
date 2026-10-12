@@ -5,10 +5,12 @@
 
 pub mod lifecycle;
 pub mod model;
+pub mod ports;
 pub mod query;
 
 pub use model::{
     AuthState, HoneypotAssessment, HoneypotEvidence, Host, HttpInfo, IcsInfo, Service, SshInfo,
     Tag, TlsCert, Transport,
 };
+pub use ports::PortModel;
 pub use query::{parse, Field, Filter, FilterValue, ParseError, Query};

@@ -9,11 +9,12 @@ use crate::config::Config;
 use anyhow::Result;
 use crusade_core::lifecycle::{self, Scope};
 use crusade_core::model::Host;
+use crusade_core::PortModel;
 use crusade_embed::Embedder;
 use crusade_enrich::{enrich_host, EnrichConfig, GeoAsnDb, Screenshotter};
 use crusade_probe::{Fingerprints, ProbeConfig};
 use crusade_store::Store;
-use crusade_vuln::{CveCache, HoneypotRules, HoneypotScorer, PortStats, VulnDb};
+use crusade_vuln::{CveCache, HoneypotRules, HoneypotScorer, VulnDb};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::Path;
@@ -209,7 +210,7 @@ pub fn load_honeypot_rules(dir: &Path) -> HoneypotRules {
 pub fn honeypot_scorer(rules: &HoneypotRules, store: &Store) -> HoneypotScorer {
     let scorer = HoneypotScorer::new(rules.clone());
     match store.tcp_port_sets() {
-        Ok(sets) => scorer.with_port_stats(PortStats::from_port_sets(&sets)),
+        Ok(sets) => scorer.with_port_stats(PortModel::from_port_sets(&sets)),
         Err(e) => {
             warn!("port statistics unavailable ({e:#}); skipping port-set signal");
             scorer

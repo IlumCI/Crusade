@@ -9,6 +9,10 @@
 //! past and no access record, which is exactly what retention selects; the
 //! rest are current. A tenth of the stale ones are marked as recently viewed,
 //! so a run can show that visited hosts are held back.
+//!
+//! Hosts are given port sets drawn from a few archetypes rather than a single
+//! port, so the index also carries the co-occurrence structure that
+//! `PortModel` learns from and `crusade scan --predict` relies on.
 
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -39,25 +43,36 @@ fn main() -> anyhow::Result<()> {
         h.last_seen = seen;
         h.country = Some("DE".into());
         h.asn = Some(3320);
-        let mut s = Service::new(80, Transport::Tcp);
-        s.product = Some("nginx".into());
-        s.version = Some("1.18.0".into());
-        // A chunky banner, since banner text is most of what the index stores.
-        s.banner = Some(format!(
-            "HTTP/1.1 200 OK\r\nServer: nginx/1.18.0\r\n\r\n<html><title>host {i}</title>{}</html>",
-            "filler ".repeat(60)
-        ));
-        s.http = Some(HttpInfo {
-            status: Some(200),
-            server: Some("nginx/1.18.0".into()),
-            title: Some(format!("host {i}")),
-            headers: vec![],
-            favicon_hash: None,
-            technologies: vec![],
-            security_headers: vec![],
-        });
-        s.observed_at = seen;
-        h.services.push(s);
+        // Archetypes, so the index holds real co-occurrence structure.
+        let ports: &[u16] = match i % 10 {
+            0..=3 => &[80, 443],
+            4..=5 => &[80, 443, 8080],
+            6..=7 => &[22, 3306],
+            8 => &[25, 587],
+            _ => &[102, 502],
+        };
+        for &port in ports {
+            let mut s = Service::new(port, Transport::Tcp);
+            s.product = Some("nginx".into());
+            s.version = Some("1.18.0".into());
+            // A chunky banner, since banner text is most of what the index
+            // stores and retention is mostly reclaiming banner bytes.
+            s.banner = Some(format!(
+                "HTTP/1.1 200 OK\r\nServer: nginx/1.18.0\r\n\r\n<html><title>host {i}</title>{}</html>",
+                "filler ".repeat(60)
+            ));
+            s.http = Some(HttpInfo {
+                status: Some(200),
+                server: Some("nginx/1.18.0".into()),
+                title: Some(format!("host {i} port {port}")),
+                headers: vec![],
+                favicon_hash: None,
+                technologies: vec![],
+                security_headers: vec![],
+            });
+            s.observed_at = seen;
+            h.services.push(s);
+        }
         h.tags.push(Tag::simple("default-page"));
 
         if is_stale {
