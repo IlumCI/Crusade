@@ -153,3 +153,13 @@ CREATE TABLE IF NOT EXISTS facet_cache (
     computed_at INTEGER NOT NULL,
     value      TEXT NOT NULL       -- Facets as JSON
 );
+
+-- IPv6 prefixes observed to answer on every address (Gasser et al., IMC 2018).
+-- Worth persisting: the probe costs 16 requests per prefix, the answer rarely
+-- changes, and without it every run re-tests the same CDN space. Collapsed to
+-- one representative rather than dropped — see crates/scan/src/ipv6.rs.
+CREATE TABLE IF NOT EXISTS aliased_prefix (
+    prefix       TEXT PRIMARY KEY,   -- e.g. 2606:4700::/32
+    first_seen   INTEGER NOT NULL,
+    last_checked INTEGER NOT NULL
+);

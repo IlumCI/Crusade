@@ -868,6 +868,51 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Record an IPv6 prefix as aliased, so later runs need not re-probe it.
+    pub fn record_aliased_prefix(&self, prefix: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO aliased_prefix (prefix, first_seen, last_checked)
+             VALUES (?1, ?2, ?2)
+             ON CONFLICT(prefix) DO UPDATE SET last_checked = ?2",
+            params![prefix, now],
+        )?;
+        Ok(())
+    }
+
+    /// Aliased IPv6 prefixes checked within `max_age` seconds, as strings.
+    ///
+    /// Aged out rather than trusted forever: a network's behaviour can change,
+    /// and silently collapsing a prefix that is no longer aliased would hide
+    /// real hosts.
+    pub fn aliased_prefixes(&self, now: i64, max_age: i64) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT prefix FROM aliased_prefix WHERE last_checked >= ?1")?;
+        let rows = stmt.query_map(params![now - max_age.max(0)], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Every IPv6 host in the index, newest first.
+    ///
+    /// These are the seeds an IPv6 target generator learns from: addresses
+    /// already known to host something, which is the only workable starting
+    /// point when the space cannot be enumerated.
+    pub fn ipv6_host_ips(&self, limit: usize) -> Result<Vec<std::net::Ipv6Addr>> {
+        // IPv6 sorts above every IPv4-mapped key, so the sort blob separates
+        // the families without a LIKE over the text form.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ip FROM hosts WHERE ip LIKE '%:%' ORDER BY last_seen DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            if let Ok(addr) = row?.parse::<std::net::Ipv6Addr>() {
+                out.push(addr);
+            }
+        }
+        Ok(out)
+    }
+
     /// Every host IP in the store (for a full rescan sweep).
     pub fn all_host_ips(&self) -> Result<Vec<String>> {
         let mut stmt = self

@@ -213,6 +213,33 @@ enum Command {
         /// Optional query; empty = whole index.
         query: Vec<String>,
     },
+    /// IPv6 discovery: learn from the addresses already indexed, then predict
+    /// and probe new ones. IPv6 cannot be swept, so the prediction *is* the
+    /// scan.
+    Ipv6 {
+        /// Extra seed addresses, one per line (merged with the index).
+        #[arg(long)]
+        seeds: Option<PathBuf>,
+        /// Candidates to generate per round.
+        #[arg(long, default_value_t = 256)]
+        budget: usize,
+        /// Rounds of generate, scan, then feed the results back.
+        #[arg(long, default_value_t = 3)]
+        rounds: usize,
+        /// TCP ports to probe on each candidate.
+        #[arg(long, value_delimiter = ',')]
+        ports: Option<Vec<u16>>,
+        /// Test each seed's /64 for aliasing first, so a network that answers
+        /// on every address is collapsed to one target instead of flooding
+        /// the generator.
+        #[arg(long)]
+        dealias: bool,
+        /// Plan only: show the candidates and probe nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        allow_private: bool,
+    },
     /// Archive and delete data that is old and has never been looked at,
     /// then reclaim the space. Writes a gzipped JSONL archive first.
     Archive {
@@ -333,6 +360,29 @@ async fn main() -> Result<()> {
         } => cmd_worker(&cfg, id, once, poll, allow_private).await,
         Command::Jobs { limit } => cmd_jobs(&cfg, limit),
         Command::Archive { dry_run, status } => cmd_archive(&cfg, dry_run, status),
+        Command::Ipv6 {
+            seeds,
+            budget,
+            rounds,
+            ports,
+            dealias,
+            dry_run,
+            allow_private,
+        } => {
+            cmd_ipv6(
+                &cfg,
+                Ipv6Opts {
+                    seeds,
+                    budget,
+                    rounds,
+                    ports,
+                    dealias,
+                    dry_run,
+                    allow_private,
+                },
+            )
+            .await
+        }
         Command::Rescore { query } => cmd_rescore(&cfg, &query.join(" ")),
         Command::Similar {
             text,
@@ -1160,6 +1210,268 @@ fn cmd_embed(cfg: &Config, raw: &str) -> Result<()> {
         started.elapsed().as_secs_f64(),
         embedder.name()
     );
+    Ok(())
+}
+
+/// How long a recorded aliasing verdict is reused before being re-probed.
+/// Long, because the answer is stable, but not forever: a network can change.
+const ALIAS_MAX_AGE_SECS: i64 = 90 * 86_400;
+
+struct Ipv6Opts {
+    seeds: Option<PathBuf>,
+    budget: usize,
+    rounds: usize,
+    ports: Option<Vec<u16>>,
+    dealias: bool,
+    dry_run: bool,
+    allow_private: bool,
+}
+
+/// IPv6 discovery: clean the seeds, optionally dealias, then generate, probe
+/// and learn.
+///
+/// The loop is the point. A one-shot generator has no idea which of its
+/// guesses were any good; feeding hits back lets the next round concentrate on
+/// the regions that answered, which is what 6Sense (USENIX Security 2024)
+/// found separates a usable generator from a published one.
+async fn cmd_ipv6(cfg: &Config, opts: Ipv6Opts) -> Result<()> {
+    let bl = load_blocklist(cfg, opts.allow_private)?;
+    let ports = opts
+        .ports
+        .clone()
+        .unwrap_or_else(|| cfg.scan.default_ports.clone());
+
+    // Seeds: the index, plus anything the operator supplies.
+    let mut raw: Vec<std::net::Ipv6Addr> = {
+        let store = Store::open(&cfg.database.path)?;
+        store.ipv6_host_ips(100_000)?
+    };
+    let from_index = raw.len();
+    if let Some(path) = &opts.seeds {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading seeds from {}", path.display()))?;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match line.parse::<std::net::Ipv6Addr>() {
+                Ok(addr) => raw.push(addr),
+                Err(_) => eprintln!("  (skipping unparseable seed {line:?})"),
+            }
+        }
+    }
+    eprintln!(
+        "{} seed address(es) ({from_index} from the index, {} from file)",
+        raw.len(),
+        raw.len() - from_index
+    );
+    if raw.is_empty() {
+        println!(
+            "No IPv6 seeds. Scan some IPv6 hosts first, or pass --seeds <file>: \
+             IPv6 cannot be swept, so there is nothing to predict from."
+        );
+        return Ok(());
+    }
+
+    // Start from what previous runs already established: the alias probe costs
+    // 16 requests per prefix and the answer rarely changes.
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let mut dealiaser = crusade_scan::Dealiaser::new();
+    {
+        let store = Store::open(&cfg.database.path)?;
+        let known = store.aliased_prefixes(now, ALIAS_MAX_AGE_SECS)?;
+        for prefix in &known {
+            if let Ok(net) = prefix.parse::<ipnet::Ipv6Net>() {
+                dealiaser.record(net, crusade_scan::Alias::Aliased);
+            }
+        }
+        if !known.is_empty() {
+            eprintln!(
+                "{} known aliased prefix(es) reused from the index",
+                known.len()
+            );
+        }
+    }
+    if opts.dealias && !opts.dry_run {
+        dealias_seeds(cfg, &raw, &ports, &mut dealiaser, &opts, &bl, now).await?;
+    }
+
+    let (seeds, report) = crusade_scan::clean_seeds(&raw, &dealiaser);
+    eprintln!(
+        "seeds: {} kept, {} duplicate, {} unroutable, {} folded into an aliased prefix",
+        report.kept, report.duplicates, report.not_scannable, report.collapsed
+    );
+    if seeds.is_empty() {
+        println!("No usable seeds after cleaning.");
+        return Ok(());
+    }
+
+    let mut generator = crusade_scan::TargetGenerator::from_seeds(&seeds);
+    eprintln!(
+        "learned {} dense region(s) from {} seed(s)",
+        generator.regions(),
+        seeds.len()
+    );
+    if generator.regions() == 0 {
+        println!(
+            "The seeds share no varying prefix, so there is nothing to generalise \
+             from. More seeds, from more networks, would help."
+        );
+        return Ok(());
+    }
+
+    let datasets = Arc::new(pipeline::Datasets::load(cfg)?);
+    let mut total_found = 0usize;
+    let mut total_probed = 0usize;
+
+    for round in 1..=opts.rounds.max(1) {
+        let raw_candidates = generator.generate(opts.budget);
+        if raw_candidates.is_empty() {
+            eprintln!("round {round}: the generator is exhausted");
+            break;
+        }
+        // Generated addresses go through dealiasing too, not just seeds: a
+        // prefix that answers on every address would otherwise soak up the
+        // whole budget and teach the model nothing.
+        let candidates = dealiaser.collapse(&raw_candidates);
+        if candidates.len() < raw_candidates.len() {
+            eprintln!(
+                "round {round}: {} candidate(s) folded into a known aliased prefix",
+                raw_candidates.len() - candidates.len()
+            );
+        }
+        total_probed += candidates.len();
+
+        if opts.dry_run {
+            println!("round {round}: {} candidate(s)", candidates.len());
+            for c in candidates.iter().take(20) {
+                println!("  {c}");
+            }
+            if candidates.len() > 20 {
+                println!("  … and {} more", candidates.len() - 20);
+            }
+            continue;
+        }
+
+        let targets: Vec<IpAddr> = candidates.iter().map(|a| IpAddr::V6(*a)).collect();
+        let scan_cfg = ScanConfig {
+            ports: ports.clone(),
+            connect_timeout: cfg.connect_timeout(),
+            rate: RateLimiterParams {
+                conn_per_sec: cfg.scan.rate_per_sec,
+                burst: cfg.scan.rate_per_sec,
+                concurrency: cfg.scan.max_concurrent,
+            },
+            allow_private: opts.allow_private,
+        };
+        let open = TcpScanner::new(scan_cfg, bl.clone()).scan(&targets).await;
+
+        // Feed every candidate back, hit or miss, so the model learns from
+        // both. A miss is as informative as a hit for steering the budget.
+        let responsive: std::collections::BTreeSet<IpAddr> =
+            open.iter().map(|(ip, _)| *ip).collect();
+        for c in &candidates {
+            generator.reward(*c, responsive.contains(&IpAddr::V6(*c)));
+        }
+
+        eprintln!(
+            "round {round}: {} candidate(s) probed, {} responded",
+            candidates.len(),
+            responsive.len()
+        );
+        total_found += responsive.len();
+
+        if !open.is_empty() {
+            let mut store = Store::open(&cfg.database.path)?;
+            pipeline::process(
+                open,
+                Vec::new(),
+                datasets.clone(),
+                cfg,
+                &mut store,
+                cfg.screenshot.enabled,
+            )
+            .await?;
+        }
+    }
+
+    if opts.dry_run {
+        println!("\nPlanned {total_probed} probe(s). Nothing was sent.");
+    } else {
+        println!(
+            "Probed {total_probed} generated address(es); {total_found} responded ({:.2}% hit rate).",
+            if total_probed == 0 {
+                0.0
+            } else {
+                100.0 * total_found as f64 / total_probed as f64
+            }
+        );
+    }
+    Ok(())
+}
+
+/// Probe each seed's /64 for aliasing and record the verdicts.
+///
+/// A network that answers on every address in a prefix would otherwise swamp
+/// the generator with meaningless hits. Detection is the nybble sweep from
+/// Gasser et al. (IMC 2018); an aliased prefix is collapsed to one
+/// representative rather than discarded, because it is usually real
+/// infrastructure.
+async fn dealias_seeds(
+    cfg: &Config,
+    seeds: &[std::net::Ipv6Addr],
+    ports: &[u16],
+    dealiaser: &mut crusade_scan::Dealiaser,
+    opts: &Ipv6Opts,
+    bl: &Blocklist,
+    now: i64,
+) -> Result<()> {
+    // One test per distinct /64, which is the usual assignment boundary.
+    let prefixes: std::collections::BTreeSet<ipnet::Ipv6Net> = seeds
+        .iter()
+        .filter(|a| crusade_scan::is_scannable(**a))
+        .filter_map(|a| ipnet::Ipv6Net::new(*a, 64).ok().map(|n| n.trunc()))
+        .collect();
+    eprintln!("dealiasing {} distinct /64 prefix(es)…", prefixes.len());
+
+    let scan_cfg = ScanConfig {
+        ports: ports.to_vec(),
+        connect_timeout: cfg.connect_timeout(),
+        rate: RateLimiterParams {
+            conn_per_sec: cfg.scan.rate_per_sec,
+            burst: cfg.scan.rate_per_sec,
+            concurrency: cfg.scan.max_concurrent,
+        },
+        allow_private: opts.allow_private,
+    };
+    let scanner = TcpScanner::new(scan_cfg, bl.clone());
+
+    let mut aliased = 0usize;
+    for prefix in prefixes {
+        // Already established: do not spend 16 probes confirming it.
+        if dealiaser.covering(prefix.network()).is_some() {
+            continue;
+        }
+        let probes = crusade_scan::alias_probes(prefix, 0x_c0ffee);
+        if probes.is_empty() {
+            continue;
+        }
+        let targets: Vec<IpAddr> = probes.iter().map(|a| IpAddr::V6(*a)).collect();
+        let open = scanner.scan(&targets).await;
+        let answered: std::collections::BTreeSet<IpAddr> = open.iter().map(|(ip, _)| *ip).collect();
+        let responses: Vec<bool> = targets.iter().map(|t| answered.contains(t)).collect();
+        let verdict = crusade_scan::Dealiaser::classify(&responses);
+        if verdict == crusade_scan::Alias::Aliased {
+            aliased += 1;
+            eprintln!("  {prefix} answers on every probed address; collapsing to one target");
+            // Persist, so later runs skip the probe.
+            let store = Store::open(&cfg.database.path)?;
+            store.record_aliased_prefix(&prefix.to_string(), now)?;
+        }
+        dealiaser.record(prefix, verdict);
+    }
+    eprintln!("{aliased} aliased prefix(es) found");
     Ok(())
 }
 

@@ -36,7 +36,9 @@
 //!
 //! Targeted scanning covers both IPv4 and IPv6: [`expand_targets`] accepts a
 //! bare IPv6 address and small IPv6 CIDRs, but refuses an IPv6 range wider than
-//! a safety cap, since such ranges are astronomically large. UDP recon is kept
+//! a safety cap, since such ranges are astronomically large. IPv6 at scale is
+//! not enumeration but prediction — see the [`ipv6`] module for seed hygiene,
+//! aliased-prefix dealiasing and target generation. UDP recon is kept
 //! to plumbing here — [`default_udp_ports`] and [`udp_worklist`] produce a
 //! blocklist-clean `(ip, port)` worklist for the `probe` crate's UDP probes to
 //! consume; the mandatory blocklist governs that worklist exactly as it does TCP
@@ -44,6 +46,7 @@
 
 mod blocklist;
 mod discovery;
+mod ipv6;
 mod rate;
 mod scanner;
 mod sweep;
@@ -53,6 +56,9 @@ mod udp;
 
 pub use blocklist::Blocklist;
 pub use discovery::{masscan_discover, MasscanConfig};
+pub use ipv6::{
+    alias_probes, clean_seeds, is_scannable, Alias, Dealiaser, SeedReport, TargetGenerator,
+};
 pub use rate::{RateLimiter, RateLimiterParams};
 pub use scanner::{ScanConfig, TcpScanner};
 pub use sweep::{filter_blocked, parse_masscan_json, parse_zmap_csv};

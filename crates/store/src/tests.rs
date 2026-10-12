@@ -597,3 +597,56 @@ fn facet_cache_serves_repeats_and_invalidates_on_write() {
         .iter()
         .any(|f| f.value == "honeypot"));
 }
+
+#[test]
+fn ipv6_seeds_exclude_ipv4_hosts() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut v6 = host_with("192.0.2.1", 80, "nginx");
+    v6.ip = "2a00:1450:4001::1".parse().unwrap();
+    let mut v6b = host_with("192.0.2.2", 443, "nginx");
+    v6b.ip = "2606:4700::1".parse().unwrap();
+    store
+        .upsert_host(&host_with("198.51.100.1", 80, "nginx"))
+        .unwrap();
+    store.upsert_host(&v6).unwrap();
+    store.upsert_host(&v6b).unwrap();
+
+    let seeds = store.ipv6_host_ips(10).unwrap();
+    assert_eq!(seeds.len(), 2, "only IPv6 hosts are seeds: {seeds:?}");
+    assert!(seeds.contains(&"2a00:1450:4001::1".parse().unwrap()));
+    assert_eq!(store.ipv6_host_ips(1).unwrap().len(), 1, "limit applies");
+}
+
+#[test]
+fn aliased_prefixes_persist_and_age_out() {
+    let store = Store::open_in_memory().unwrap();
+    const NOW: i64 = 1_800_000_000;
+    const DAY: i64 = 86_400;
+
+    store
+        .record_aliased_prefix("2606:4700::/32", NOW - 10 * DAY)
+        .unwrap();
+    store
+        .record_aliased_prefix("2a00:1450::/32", NOW - 200 * DAY)
+        .unwrap();
+
+    // Fresh enough to reuse.
+    let recent = store.aliased_prefixes(NOW, 30 * DAY).unwrap();
+    assert_eq!(recent, vec!["2606:4700::/32"], "the old one has aged out");
+    // A longer window includes both.
+    assert_eq!(store.aliased_prefixes(NOW, 365 * DAY).unwrap().len(), 2);
+    // Zero window trusts nothing.
+    assert!(store.aliased_prefixes(NOW, 0).unwrap().is_empty());
+
+    // Re-checking refreshes rather than duplicating.
+    store.record_aliased_prefix("2a00:1450::/32", NOW).unwrap();
+    assert_eq!(
+        store.aliased_prefixes(NOW, DAY).unwrap(),
+        vec!["2a00:1450::/32"]
+    );
+    let total: i64 = store
+        .conn
+        .query_row("SELECT count(*) FROM aliased_prefix", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(total, 2, "no duplicate rows");
+}

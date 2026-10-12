@@ -119,7 +119,10 @@ GeoIP and screenshots today).
 4. M2 + V2, then M3 (shared embedding/LLM runtime). **M2 done**
    (`crates/embed`, `crusade similar`/`embed`, web `/similar` + per-service
    pivots); V2 and M3 pending.
-5. D6 IPv6 pipeline, D8 QUIC, D9 ZMap fields.
+5. D6 IPv6 pipeline **done** (`crates/scan/src/ipv6.rs`, `crusade ipv6`:
+   seed hygiene, aliased-prefix detection with persistence, nybble-region
+   generation, online feedback — logic tested, untested against live IPv6).
+   D8 QUIC and D9 ZMap fields pending.
 6. Honeypot stages 2-3, M4-M7.
 
 ## Open gaps in the literature

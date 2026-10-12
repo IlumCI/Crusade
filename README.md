@@ -140,6 +140,56 @@ their evidence appear in `crusade host` and the web UI; hosts at 50% or more
 are tagged `honeypot`. Use `-honeypot:true` to keep honeypots out of exposure
 statistics.
 
+## IPv6
+
+IPv4 can be enumerated; IPv6 cannot. A single /64 holds 18 quintillion
+addresses, so there is no sweep to run — hosts must be predicted from
+addresses already known, and the prediction *is* the scan.
+
+```
+crusade ipv6 --dealias --budget 512 --rounds 5
+crusade ipv6 --seeds known-v6.txt --dry-run     # plan only, probe nothing
+```
+
+Seeds come from the IPv6 hosts already in the index, plus an optional file.
+The pipeline, in the order the research says matters:
+
+1. **Seed hygiene.** Duplicates and unroutable space (link-local,
+   unique-local, multicast, documentation, IPv4-mapped) are dropped and
+   reported. 6SEVEN (Kanipe et al., IMC 2026, arXiv:2609.08098) ported eight
+   published generators into one framework and found seed composition and
+   dealiasing moved results more than the choice of algorithm — so this comes
+   first, and the generator is a deliberately replaceable baseline.
+2. **Aliased-prefix dealiasing.** Some networks answer on *every* address in a
+   prefix, which floods a generator with worthless hits. Detection is the
+   nybble sweep from Gasser et al. (*Clusters in the Expanse*, IMC 2018):
+   probe one address per value of the nybble past the prefix and see whether
+   all of them answer. Such a prefix is **collapsed to one representative, not
+   discarded** — *Rusty Clusters* (Zirngibl et al., IMC 2022) found over 98% of
+   Fastly's announced IPv6 space reads as aliased, so dropping it throws away
+   real infrastructure. Verdicts persist in the index and are reused for 90
+   days, since the probe costs 16 requests per prefix and the answer is stable.
+   Silence is recorded as inconclusive, never as aliased: assuming otherwise
+   would silently hide real space.
+3. **Generation.** Seeds are grouped by shared nybble prefixes; where several
+   seeds share a prefix and the next nybble varies, a provider is handing out
+   addresses, and candidates fill in values not yet seen. Densest regions
+   first, round-robin so one region cannot starve the budget, and never a seed
+   or a duplicate.
+4. **Feedback.** Every candidate is reported back, hit or miss, so the next
+   round concentrates on regions that answered — the closed loop 6Sense
+   (Williams et al., USENIX Security 2024) found separates a usable generator
+   from a published one.
+
+Generated candidates are dealiased too, not just seeds, so a known aliased
+prefix cannot soak up a round's budget.
+
+**Caveat on testing.** The logic above is unit-tested (address arithmetic,
+probe-set construction, alias classification, seed cleaning, generation,
+feedback), and the CLI is exercised end to end with `--dry-run`. It has *not*
+been run against live IPv6: the development container has no IPv6 stack at
+all. Treat the generator's real-world hit rate as unmeasured.
+
 ## Predictive discovery
 
 Probing every port of every host is unaffordable — 65,535 ports across a /16
