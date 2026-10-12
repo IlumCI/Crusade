@@ -47,6 +47,16 @@ The iconic Shodan pivots + the other half of coverage (UDP) + operations.
   `has_exploit:` filter; web highlighting. Records only that an exploit EXISTS —
   never downloads, runs, or verifies one.
 
-## v3 — LATER
-Screenshots (RDP/VNC/HTTP, the deferred seam in enrich), distributed workers,
-trends-over-time views, alert transports (webhook/email).
+## v3 — DONE (continued)
+- **Alert transports**: webhook + SMTP email, persisted alert log, `crusade alerts`.
+- **Screenshots**: headless-Chrome capture (graceful no-op without Chrome),
+  served in the web UI.
+- **History/trends**: per-host timeline + a trends page (alerts + facets).
+- **Distributed queue**: `enqueue`/`worker`/`jobs` (single-host WAL MVP).
+- **Deploy/CI**: Dockerfile + compose, GitHub Actions (CI, Pages, tagged
+  release → binary + GHCR container), integration test, concurrency hardening.
+
+## v4 — FUTURE
+Cross-host distribution (networked job store, not single-host SQLite),
+RDP/VNC screenshot protocols, more ICS/OT coverage, a client-side static demo
+of the UI, alert transports beyond webhook/email (PagerDuty, etc.).
