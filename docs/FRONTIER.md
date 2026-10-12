@@ -108,7 +108,8 @@ GeoIP and screenshots today).
    the port co-occurrence statistics exist and are used for scoring, not yet
    for D2 port prediction.
 3. D3, D4, D1 (engine core). **D3 done** (`grab::grab_adaptive`).
-4. M2 + V2, then M3 (shared embedding/LLM runtime).
+4. M2 + V2, then M3 (shared embedding/LLM runtime). **M2 done** (CLI;
+   `crates/embed`, `crusade similar`/`embed`); web UI and V2 pending.
 5. D6 IPv6 pipeline, D8 QUIC, D9 ZMap fields.
 6. Honeypot stages 2-3, M4-M7.
 

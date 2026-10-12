@@ -8,6 +8,7 @@
 use crate::config::Config;
 use anyhow::Result;
 use crusade_core::model::Host;
+use crusade_embed::Embedder;
 use crusade_enrich::{enrich_host, EnrichConfig, GeoAsnDb, Screenshotter};
 use crusade_probe::{Fingerprints, ProbeConfig};
 use crusade_store::Store;
@@ -24,6 +25,8 @@ pub struct Datasets {
     pub geo: GeoAsnDb,
     pub vulns: VulnDb,
     pub honeypot_rules: HoneypotRules,
+    /// Embedding model for semantic search; `None` when not installed.
+    pub embedder: Option<Embedder>,
 }
 
 impl Datasets {
@@ -46,14 +49,56 @@ impl Datasets {
         });
 
         let honeypot_rules = load_honeypot_rules(dir);
+        let embedder = load_embedder(dir);
 
         Ok(Datasets {
             fingerprints,
             geo,
             vulns,
             honeypot_rules,
+            embedder,
         })
     }
+}
+
+/// The default embedding model under `<data dir>/models/`, if installed.
+pub fn load_embedder(dir: &Path) -> Option<Embedder> {
+    let model_dir = dir.join("models").join(crusade_embed::DEFAULT_MODEL_DIR);
+    if !crusade_embed::MODEL_FILES
+        .iter()
+        .all(|f| model_dir.join(f).exists())
+    {
+        return None;
+    }
+    match Embedder::load(&model_dir) {
+        Ok(e) => Some(e),
+        Err(e) => {
+            warn!("embedding model unavailable ({e:#}); semantic search disabled");
+            None
+        }
+    }
+}
+
+/// Embed every service of `host` that has something to say.
+pub fn embed_host(embedder: &Embedder, host: &Host) -> Vec<(u16, String, Vec<i8>)> {
+    let (keys, texts): (Vec<(u16, String)>, Vec<String>) = host
+        .services
+        .iter()
+        .filter_map(|svc| {
+            let transport = match svc.transport {
+                crusade_core::Transport::Tcp => "tcp",
+                crusade_core::Transport::Udp => "udp",
+            };
+            crusade_embed::service_text(svc).map(|t| ((svc.port, transport.to_string()), t))
+        })
+        .unzip();
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    keys.into_iter()
+        .zip(embedder.embed(&texts))
+        .map(|((port, transport), v)| (port, transport, v))
+        .collect()
 }
 
 /// `<data dir>/honeypot-rules.toml` when present and valid, else the built-in
@@ -229,6 +274,10 @@ pub async fn process(
 
         info!(ip = %ip, services = host.services.len(), tags = host.tags.len(), "host processed");
         store.upsert_host(&host)?;
+        if let Some(embedder) = &datasets.embedder {
+            let vecs = embed_host(embedder, &host);
+            store.set_service_vectors(&ip.to_string(), embedder.name(), &vecs)?;
+        }
         hosts.push(host);
     }
 

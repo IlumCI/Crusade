@@ -6,6 +6,8 @@
 //!   * NVD CVE JSON 2.0 bulk feeds (one per year, plus `modified`), keyless.
 //!     Each is reduced to its matchable subset (CVEs with vulnerable CPE rules)
 //!     and stored as a compact `nvdcve-2.0-<name>.json`.
+//!   * The Model2Vec `potion-base-8M` static embedding model (Hugging Face Hub),
+//!     for semantic similarity search.
 
 use crate::config::Config;
 use anyhow::{Context, Result};
@@ -43,6 +45,10 @@ pub async fn update_data(cfg: &Config) -> Result<()> {
         eprintln!("  (metasploit feed skipped: {e})");
     }
 
+    if let Err(e) = update_embed_model(dir).await {
+        eprintln!("  (embedding model skipped: {e:#}; semantic search stays off)");
+    }
+
     let (kept, failed) = update_nvd(dir).await;
     if failed > 0 {
         eprintln!("  ({failed} NVD feed(s) failed; rerun update-data to retry)");
@@ -52,6 +58,26 @@ pub async fn update_data(cfg: &Config) -> Result<()> {
         "Datasets updated in {} ({kept} matchable CVEs from NVD).",
         dir.display()
     );
+    Ok(())
+}
+
+/// Fetch the default Model2Vec embedding model (~30 MB) from the Hugging
+/// Face Hub into `<data dir>/models/`. Files are written to a temporary name
+/// first so a partial download never looks installed.
+async fn update_embed_model(dir: &Path) -> Result<()> {
+    let model_dir = dir.join("models").join(crusade_embed::DEFAULT_MODEL_DIR);
+    std::fs::create_dir_all(&model_dir)?;
+    for file in crusade_embed::MODEL_FILES {
+        let url = format!(
+            "https://huggingface.co/{}/resolve/main/{file}",
+            crusade_embed::DEFAULT_MODEL_REPO
+        );
+        let bytes = fetch(&url).await?;
+        let tmp = model_dir.join(format!("{file}.part"));
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, model_dir.join(file))?;
+    }
+    eprintln!("  → {}", model_dir.display());
     Ok(())
 }
 

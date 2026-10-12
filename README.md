@@ -65,7 +65,19 @@ crusade scan 198.51.100.0/24 --screenshot         # capture web-UI screenshots (
 crusade search 'port:22 -honeypot:true'           # hide likely honeypots
 crusade search -- -honeypot:true                  # `--` when a query starts with '-'
 crusade rescore                                   # recompute honeypot scores offline
+
+# v5: semantic search (CPU-only embedded model, fetched by update-data)
+crusade similar router admin login page           # services similar in meaning
+crusade similar --like 203.0.113.7:8080 --filter 'country:DE'
+crusade embed                                     # backfill vectors for an existing index
 ```
+
+Semantic search uses the Model2Vec static embedding model `potion-base-8M`
+(~30 MB, 256 dimensions, CPU-only). Every service is embedded at ingest from
+its product, title, server, certificate names and banner; vectors are stored
+int8-quantised in SQLite and ranked by exact cosine similarity. Static models
+match vocabulary well ("ubuntu apache", "ssh server") and paraphrases less
+well. Without the model the feature is simply off.
 
 Each probed service can carry a JARM fingerprint, favicon mmh3 hash, TLS
 version/cipher, detected technologies and security headers, and (for SSH) the

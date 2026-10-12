@@ -1,0 +1,11 @@
+[package]
+name = "crusade-embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crusade-core.workspace = true
+anyhow.workspace = true
+# Static (Model2Vec) embeddings: no ONNX runtime, no GPU, pure-Rust tokenizer.
+model2vec-rs = { version = "0.3", default-features = false, features = ["fancy-regex"] }

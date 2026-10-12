@@ -120,3 +120,17 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id);
+
+-- Embedding vectors (int8, L2-normalised) for semantic similarity search, one
+-- per service. `model` names the embedding model so vectors from different
+-- models are never compared.
+CREATE TABLE IF NOT EXISTS service_vec (
+    ip        TEXT NOT NULL,
+    port      INTEGER NOT NULL,
+    transport TEXT NOT NULL,
+    model     TEXT NOT NULL,
+    vec       BLOB NOT NULL,
+    PRIMARY KEY (ip, port, transport),
+    FOREIGN KEY (ip) REFERENCES hosts(ip) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_service_vec_model ON service_vec(model);

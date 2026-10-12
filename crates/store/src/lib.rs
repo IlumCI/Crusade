@@ -59,6 +59,15 @@ pub struct Facets {
 }
 
 /// A queued scan job claimed by a `crusade worker`.
+/// One service ranked by embedding similarity.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SimilarHit {
+    pub ip: String,
+    pub port: u16,
+    pub transport: String,
+    pub score: f32,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Job {
     pub id: i64,
@@ -127,6 +136,107 @@ impl Store {
         Ok(())
     }
 
+    /// Replace the embedding vectors of one host's services.
+    /// `vecs` holds `(port, transport, int8 vector)`.
+    pub fn set_service_vectors(
+        &mut self,
+        ip: &str,
+        model: &str,
+        vecs: &[(u16, String, Vec<i8>)],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM service_vec WHERE ip = ?1", params![ip])?;
+        for (port, transport, v) in vecs {
+            let blob: Vec<u8> = v.iter().map(|&x| x as u8).collect();
+            tx.execute(
+                "INSERT OR REPLACE INTO service_vec (ip, port, transport, model, vec)
+                 VALUES (?1,?2,?3,?4,?5)",
+                params![ip, port, transport, model, blob],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The stored vector of one service under `model`.
+    pub fn service_vector(
+        &self,
+        model: &str,
+        ip: &str,
+        port: u16,
+        transport: &str,
+    ) -> Result<Option<Vec<i8>>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT vec FROM service_vec WHERE ip=?1 AND port=?2 AND transport=?3 AND model=?4",
+                params![ip, port, transport, model],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(blob.map(|b| b.into_iter().map(|x| x as i8).collect()))
+    }
+
+    /// Number of stored vectors under `model`.
+    pub fn vector_count(&self, model: &str) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM service_vec WHERE model = ?1",
+            params![model],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Exact nearest services to `query` (cosine over int8 normalised
+    /// vectors), optionally restricted to hosts matching `restrict`.
+    pub fn similar_services(
+        &self,
+        model: &str,
+        query: &[i8],
+        restrict: Option<&Query>,
+        limit: usize,
+    ) -> Result<Vec<SimilarHit>> {
+        let allowed: Option<std::collections::HashSet<String>> = match restrict {
+            Some(q) => Some(self.matching_ips(q)?.into_iter().collect()),
+            None => None,
+        };
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ip, port, transport, vec FROM service_vec WHERE model = ?1")?;
+        let rows = stmt.query_map(params![model], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, u16>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+            ))
+        })?;
+        let mut hits: Vec<SimilarHit> = Vec::new();
+        for row in rows {
+            let (ip, port, transport, blob) = row?;
+            if allowed.as_ref().is_some_and(|a| !a.contains(&ip)) {
+                continue;
+            }
+            if blob.len() != query.len() {
+                continue;
+            }
+            let dot: i32 = blob
+                .iter()
+                .zip(query)
+                .map(|(&b, &q)| i32::from(b as i8) * i32::from(q))
+                .sum();
+            hits.push(SimilarHit {
+                ip,
+                port,
+                transport,
+                // Quantisation rounding can push a self-match past 1.
+                score: (dot as f32 / (127.0 * 127.0)).clamp(-1.0, 1.0),
+            });
+        }
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        hits.truncate(limit);
+        Ok(hits)
+    }
+
     /// TCP port sets of every indexed host, for co-occurrence statistics.
     pub fn tcp_port_sets(&self) -> Result<Vec<Vec<u16>>> {
         let mut stmt = self.conn.prepare(
@@ -173,8 +283,10 @@ impl Store {
             ],
         )?;
 
-        // Replace current services for this host, and append history.
+        // Replace current services for this host, and append history. Their
+        // embedding vectors describe the old services, so they go too.
         tx.execute("DELETE FROM services WHERE ip = ?1", params![ip])?;
+        tx.execute("DELETE FROM service_vec WHERE ip = ?1", params![ip])?;
         let mut fts_body = String::new();
         for svc in &host.services {
             let transport = serde_json::to_value(svc.transport)?

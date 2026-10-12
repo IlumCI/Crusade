@@ -171,6 +171,27 @@ enum Command {
         #[arg(long)]
         allow_private: bool,
     },
+    /// Find services similar in meaning to a text, or to an indexed service.
+    /// Needs the embedding model (`update-data`) and embedded services.
+    Similar {
+        /// Free text, e.g. "router admin login page".
+        text: Vec<String>,
+        /// Use this indexed service as the query: IP:PORT or IP:PORT/udp.
+        #[arg(long)]
+        like: Option<String>,
+        /// Restrict to hosts matching this Crusade query.
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compute embedding vectors for indexed services (backfill; no network).
+    Embed {
+        /// Optional query; empty = whole index.
+        query: Vec<String>,
+    },
     /// Recompute honeypot scores for indexed hosts (no network traffic).
     /// Run after editing `<data dir>/honeypot-rules.toml` or as the index grows.
     Rescore {
@@ -281,6 +302,14 @@ async fn main() -> Result<()> {
         } => cmd_worker(&cfg, id, once, poll, allow_private).await,
         Command::Jobs { limit } => cmd_jobs(&cfg, limit),
         Command::Rescore { query } => cmd_rescore(&cfg, &query.join(" ")),
+        Command::Similar {
+            text,
+            like,
+            filter,
+            limit,
+            json,
+        } => cmd_similar(&cfg, &text.join(" "), like, filter, limit, json),
+        Command::Embed { query } => cmd_embed(&cfg, &query.join(" ")),
     }
 }
 
@@ -773,6 +802,105 @@ fn cmd_export(cfg: &Config, raw: &str, out: Option<PathBuf>) -> Result<()> {
     }
     writer.flush()?;
     eprintln!("Exported {n} host(s).");
+    Ok(())
+}
+
+/// Parse `IP:PORT`, `IP:PORT/udp`, `[v6]:PORT` into (ip, port, transport).
+fn parse_service_ref(s: &str) -> Result<(String, u16, String)> {
+    let (addr, transport) = match s.rsplit_once('/') {
+        Some((a, t)) if t == "tcp" || t == "udp" => (a, t.to_string()),
+        _ => (s, "tcp".to_string()),
+    };
+    let sock: std::net::SocketAddr = addr
+        .parse()
+        .with_context(|| format!("expected IP:PORT (or [IPv6]:PORT), got {addr:?}"))?;
+    Ok((sock.ip().to_string(), sock.port(), transport))
+}
+
+fn cmd_similar(
+    cfg: &Config,
+    text: &str,
+    like: Option<String>,
+    filter: Option<String>,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
+    let embedder = pipeline::load_embedder(&cfg.data.dir)
+        .context("no embedding model installed; run `crusade update-data`")?;
+    let store = Store::open(&cfg.database.path)?;
+    let model = embedder.name().to_string();
+    let query_vec = match &like {
+        Some(r) => {
+            let (ip, port, transport) = parse_service_ref(r)?;
+            store
+                .service_vector(&model, &ip, port, &transport)?
+                .with_context(|| format!("no vector for {r}; run `crusade embed`"))?
+        }
+        None if !text.trim().is_empty() => embedder.embed_one(text),
+        None => anyhow::bail!("give a text or --like IP:PORT"),
+    };
+    let restrict = filter
+        .as_deref()
+        .map(query::parse)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let hits = store.similar_services(&model, &query_vec, restrict.as_ref(), limit)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&hits)?);
+        return Ok(());
+    }
+    if hits.is_empty() {
+        println!(
+            "No embedded services ({} vectors indexed).",
+            store.vector_count(&model)?
+        );
+    }
+    for h in hits {
+        let svc = store.get_host(&h.ip)?.and_then(|host| {
+            host.services
+                .into_iter()
+                .find(|s| s.port == h.port)
+                .and_then(|s| crusade_embed::service_text(&s))
+        });
+        let mut text = svc
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if text.chars().count() > 90 {
+            text = text.chars().take(89).collect::<String>() + "…";
+        }
+        let addr = std::net::SocketAddr::new(h.ip.parse()?, h.port);
+        println!(
+            "{:.3}  {:<28} {}",
+            h.score,
+            format!("{addr}/{}", h.transport),
+            text
+        );
+    }
+    Ok(())
+}
+
+fn cmd_embed(cfg: &Config, raw: &str) -> Result<()> {
+    let q = query::parse(raw).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let embedder = pipeline::load_embedder(&cfg.data.dir)
+        .context("no embedding model installed; run `crusade update-data`")?;
+    let mut store = Store::open(&cfg.database.path)?;
+    let (mut hosts, mut vectors) = (0u64, 0usize);
+    let started = std::time::Instant::now();
+    for ip in store.matching_ips(&q)? {
+        if let Some(h) = store.get_host(&ip)? {
+            let vecs = pipeline::embed_host(&embedder, &h);
+            vectors += vecs.len();
+            store.set_service_vectors(&ip, embedder.name(), &vecs)?;
+            hosts += 1;
+        }
+    }
+    println!(
+        "Embedded {vectors} service(s) on {hosts} host(s) in {:.2}s with {}.",
+        started.elapsed().as_secs_f64(),
+        embedder.name()
+    );
     Ok(())
 }
 

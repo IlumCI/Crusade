@@ -8,6 +8,7 @@ members = [
     "crates/enrich",
     "crates/vuln",
     "crates/web",
+    "crates/embed",
 ]
 
 [workspace.package]
@@ -41,6 +42,7 @@ crusade-probe = { path = "crates/probe" }
 crusade-enrich = { path = "crates/enrich" }
 crusade-vuln = { path = "crates/vuln" }
 crusade-web = { path = "crates/web" }
+crusade-embed = { path = "crates/embed" }
 
 [package]
 name = "crusade"
@@ -61,6 +63,7 @@ crusade-probe.workspace = true
 crusade-enrich.workspace = true
 crusade-vuln.workspace = true
 crusade-web.workspace = true
+crusade-embed.workspace = true
 tokio.workspace = true
 clap.workspace = true
 anyhow.workspace = true

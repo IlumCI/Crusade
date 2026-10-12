@@ -346,3 +346,47 @@ fn migrate_adds_honeypot_column_to_old_db() {
     drop(store);
     let _ = std::fs::remove_file(&dir);
 }
+
+#[test]
+fn service_vectors_rank_and_follow_host_rewrites() {
+    let mut store = Store::open_in_memory().unwrap();
+    for (ip, port) in [("192.0.2.30", 80), ("192.0.2.31", 22), ("198.51.100.5", 80)] {
+        store.upsert_host(&host_with(ip, port, "x")).unwrap();
+    }
+    let v = |a: i8, b: i8| vec![a, b];
+    store
+        .set_service_vectors("192.0.2.30", "m", &[(80, "tcp".into(), v(127, 0))])
+        .unwrap();
+    store
+        .set_service_vectors("192.0.2.31", "m", &[(22, "tcp".into(), v(0, 127))])
+        .unwrap();
+    store
+        .set_service_vectors("198.51.100.5", "m", &[(80, "tcp".into(), v(90, 90))])
+        .unwrap();
+    assert_eq!(store.vector_count("m").unwrap(), 3);
+
+    let hits = store.similar_services("m", &v(127, 0), None, 10).unwrap();
+    let order: Vec<&str> = hits.iter().map(|h| h.ip.as_str()).collect();
+    assert_eq!(order, vec!["192.0.2.30", "198.51.100.5", "192.0.2.31"]);
+    assert!((hits[0].score - 1.0).abs() < 1e-6);
+
+    let only = parse("net:198.51.100.0/24").unwrap();
+    let hits = store
+        .similar_services("m", &v(127, 0), Some(&only), 10)
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(store
+        .similar_services("other", &v(127, 0), None, 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store.service_vector("m", "192.0.2.31", 22, "tcp").unwrap(),
+        Some(v(0, 127))
+    );
+
+    // Re-indexing a host drops its now-stale vectors.
+    store
+        .upsert_host(&host_with("192.0.2.30", 80, "x"))
+        .unwrap();
+    assert_eq!(store.vector_count("m").unwrap(), 2);
+}
