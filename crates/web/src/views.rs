@@ -230,6 +230,9 @@ pub struct ServiceView {
     /// Sanitized screenshot filename (no path separators), served at
     /// `/screens/<file>`. `None` when absent or unsafe to serve.
     pub screenshot: Option<String>,
+    /// Set when the port was probed and stayed silent: the service is pending
+    /// eviction and is shown greyed out rather than as live.
+    pub pending_since: Option<String>,
     pub observed_at: String,
 }
 
@@ -286,6 +289,7 @@ impl From<&Service> for ServiceView {
             auth,
             auth_open,
             screenshot: safe_screenshot(s.screenshot.as_deref()),
+            pending_since: s.pending_since.map(fmt_time),
             observed_at: fmt_time(s.observed_at),
         }
     }

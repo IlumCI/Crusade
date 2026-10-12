@@ -61,6 +61,14 @@ Cross-host distribution (networked job store, not single-host SQLite),
 RDP/VNC screenshot protocols, more ICS/OT coverage, a client-side static demo
 of the UI, alert transports beyond webhook/email (PagerDuty, etc.).
 
+## v5 — IN PROGRESS
+Done so far: NVD JSON 2.0 migration (CVE matching worked on no fresh install
+before), passive honeypot scoring (`honeypot:` + `crusade rescore`),
+protocol-agnostic probing on any port, CPU-only semantic search
+(`crusade similar`/`embed`), and the service lifecycle (pending → evicted →
+forgotten, with `service-gone` alerts). See `docs/FRONTIER.md` for what
+remains.
+
 ## v5 — PLANNED
 Frontier upgrade derived from a 2026 literature survey: tiered + predictive
 port discovery, protocol-agnostic probing, service lifecycle/eviction, IPv6

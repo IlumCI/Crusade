@@ -14,6 +14,7 @@ pub struct Config {
     pub data: Data,
     pub alert: Alert,
     pub screenshot: Screenshot,
+    pub lifecycle: LifecycleCfg,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,6 +55,36 @@ pub struct Web {
 pub struct Data {
     pub dir: PathBuf,
     pub nmap_probes: PathBuf,
+}
+
+/// How long a service that stops answering is kept. Mirrors the published
+/// Censys policy (SIGCOMM 2025): one missed scan marks a service pending
+/// rather than deleting it, since a single miss is usually loss or throttling.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LifecycleCfg {
+    /// Hours a probed-but-silent service stays pending before eviction.
+    pub evict_after_hours: i64,
+    /// Days a host with no services is kept before being dropped.
+    pub forget_after_days: i64,
+}
+
+impl Default for LifecycleCfg {
+    fn default() -> Self {
+        LifecycleCfg {
+            evict_after_hours: 72,
+            forget_after_days: 60,
+        }
+    }
+}
+
+impl LifecycleCfg {
+    pub fn policy(&self) -> crusade_core::lifecycle::Lifecycle {
+        crusade_core::lifecycle::Lifecycle {
+            evict_after: time::Duration::hours(self.evict_after_hours.max(0)),
+            forget_after: time::Duration::days(self.forget_after_days.max(0)),
+        }
+    }
 }
 
 impl Config {

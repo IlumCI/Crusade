@@ -32,6 +32,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_column("hosts", "honeypot")? {
         conn.execute_batch("ALTER TABLE hosts ADD COLUMN honeypot REAL")?;
     }
+    if !has_column("services", "pending_since")? {
+        conn.execute_batch("ALTER TABLE services ADD COLUMN pending_since INTEGER")?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_services_pending ON services(pending_since)",
+    )?;
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_hosts_honeypot ON hosts(honeypot)")?;
     Ok(())
 }
@@ -132,6 +138,24 @@ impl Store {
                 params![ip, tag.name, tag.cve, tag.detail],
             )?;
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove a host and everything attached to it (services, tags, vectors,
+    /// history). Used when a host has had nothing listening for a long time.
+    pub fn delete_host(&mut self, ip: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for table in [
+            "services",
+            "service_vec",
+            "tags",
+            "service_history",
+            "banner_fts",
+        ] {
+            tx.execute(&format!("DELETE FROM {table} WHERE ip = ?1"), params![ip])?;
+        }
+        tx.execute("DELETE FROM hosts WHERE ip = ?1", params![ip])?;
         tx.commit()?;
         Ok(())
     }
@@ -310,8 +334,8 @@ impl Store {
                 "INSERT INTO services
                    (ip, port, transport, service, product, version, cpe, ssl_cn,
                     jarm, favicon_hash, ssh_hostkey, hassh, tls_version, ics_protocol,
-                    auth_state, screenshot, has_screenshot, observed_at, banner)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                    auth_state, screenshot, has_screenshot, pending_since, observed_at, banner)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
                 params![
                     ip,
                     svc.port,
@@ -330,6 +354,7 @@ impl Store {
                     auth_state,
                     svc.screenshot,
                     has_shot,
+                    svc.pending_since.map(|t| t.unix_timestamp()),
                     svc.observed_at.unix_timestamp(),
                     svc.banner
                 ],

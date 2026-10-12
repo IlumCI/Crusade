@@ -28,6 +28,14 @@ bind = "127.0.0.1:8088"
 dir = "data"
 nmap_probes = "/usr/share/nmap/nmap-service-probes"
 
+[lifecycle]
+# A service that stops answering is not deleted on the first miss (a single
+# miss is usually packet loss or rate limiting). It is marked pending, stays
+# visible, and is evicted only after this window. A host left with no services
+# is dropped from the index after forget_after_days.
+evict_after_hours = 72
+forget_after_days = 60
+
 [alert]
 # Transports for `crusade monitor`. All optional — with none set, alerts are
 # only recorded (view with `crusade alerts`).

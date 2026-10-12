@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS services (
     auth_state  TEXT,
     screenshot  TEXT,
     has_screenshot INTEGER NOT NULL DEFAULT 0,
+    pending_since INTEGER,          -- probed but silent since this time; NULL = live
     observed_at INTEGER NOT NULL,
     banner      TEXT,
     PRIMARY KEY (ip, port, transport),
@@ -58,6 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_services_hassh   ON services(hassh);
 CREATE INDEX IF NOT EXISTS idx_services_transport ON services(transport);
 CREATE INDEX IF NOT EXISTS idx_services_ics     ON services(ics_protocol);
 CREATE INDEX IF NOT EXISTS idx_services_auth    ON services(auth_state);
+CREATE INDEX IF NOT EXISTS idx_services_pending ON services(pending_since);
 
 -- Tags attached to a host (vuln tags carry a cve id).
 CREATE TABLE IF NOT EXISTS tags (

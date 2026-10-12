@@ -7,6 +7,7 @@
 
 use crate::config::Config;
 use anyhow::Result;
+use crusade_core::lifecycle::{self, Scope};
 use crusade_core::model::Host;
 use crusade_embed::Embedder;
 use crusade_enrich::{enrich_host, EnrichConfig, GeoAsnDb, Screenshotter};
@@ -191,9 +192,42 @@ fn load_vulns(dir: &Path) -> Result<VulnDb> {
 /// `tcp_ports` are probed with the full TCP app-layer stack (banner, fingerprint,
 /// TLS/JARM/favicon, SSH); `udp_ports` are probed with the read-only UDP protocol
 /// probes. Services from both are merged onto the same host by IP.
+///
+/// The eviction scope of each host is just the ports that answered, so a port
+/// that is no longer listening is only noticed when the caller says it was
+/// probed — see [`process_scoped`].
 pub async fn process(
     tcp_ports: Vec<(IpAddr, u16)>,
     udp_ports: Vec<(IpAddr, u16)>,
+    datasets: Arc<Datasets>,
+    cfg: &Config,
+    store: &mut Store,
+    screenshot: bool,
+) -> Result<Vec<Host>> {
+    process_scoped(
+        tcp_ports,
+        udp_ports,
+        BTreeMap::new(),
+        datasets,
+        cfg,
+        store,
+        screenshot,
+    )
+    .await
+}
+
+/// Like [`process`], but `scope` states which ports each host was *probed* on,
+/// whether or not they answered.
+///
+/// This is what makes eviction work: a rescan that probes a known port and
+/// gets nothing marks that service pending, and a host whose every port has
+/// gone silent is still processed (it has no answering services at all, so it
+/// would otherwise never be looked at again).
+#[allow(clippy::too_many_arguments)]
+pub async fn process_scoped(
+    tcp_ports: Vec<(IpAddr, u16)>,
+    udp_ports: Vec<(IpAddr, u16)>,
+    scope: BTreeMap<IpAddr, Scope>,
     datasets: Arc<Datasets>,
     cfg: &Config,
     store: &mut Store,
@@ -219,6 +253,11 @@ pub async fn process(
     for (ip, port) in udp_ports {
         by_host.entry(ip).or_default().1.push(port);
     }
+    // A host that was probed but answered nowhere still needs processing, so
+    // its services can move through pending to eviction.
+    for ip in scope.keys() {
+        by_host.entry(*ip).or_default();
+    }
 
     let probe_cfg = ProbeConfig {
         timeout: cfg.connect_timeout(),
@@ -232,6 +271,9 @@ pub async fn process(
     let timeout = cfg.connect_timeout();
     let honeypot = honeypot_scorer(&datasets.honeypot_rules, store);
 
+    let policy = cfg.lifecycle.policy();
+    let now = time::OffsetDateTime::now_utc();
+
     let mut hosts = Vec::new();
     for (ip, (mut tcp, mut udp)) in by_host {
         tcp.sort_unstable();
@@ -239,6 +281,12 @@ pub async fn process(
         udp.sort_unstable();
         udp.dedup();
         let mut host = Host::new(ip);
+        // What this run probed on this host: the eviction scope. Callers that
+        // do not track it fall back to whatever answered.
+        let host_scope = scope
+            .get(&ip)
+            .cloned()
+            .unwrap_or_else(|| Scope::new(tcp.iter().copied(), udp.iter().copied()));
 
         // Probe TCP ports concurrently (full app-layer stack).
         let mut tcp_tasks = Vec::new();
@@ -261,6 +309,30 @@ pub async fn process(
             futures::future::join_all(udp_tasks)
         );
         host.services = tcp_res.into_iter().chain(udp_res).flatten().collect();
+
+        // Merge with what we already knew: a port we probed that stayed silent
+        // becomes pending rather than vanishing, and is evicted only after the
+        // configured window. Ports this run did not probe are left alone.
+        let prior = store.get_host(&ip.to_string())?;
+        if let Some(before) = &prior {
+            let (merged, changes) = lifecycle::merge(before, host, &host_scope, now, &policy);
+            host = merged;
+            for change in changes {
+                match change {
+                    lifecycle::Change::Pending { port, transport } => {
+                        info!(%ip, port, ?transport, "service silent; pending eviction")
+                    }
+                    lifecycle::Change::Evicted { port, transport } => {
+                        info!(%ip, port, ?transport, "service evicted after eviction window")
+                    }
+                }
+            }
+            if lifecycle::should_forget(before, &host, now, &policy) {
+                info!(%ip, "host has had nothing listening for the forget window; dropping");
+                store.delete_host(&ip.to_string())?;
+                continue;
+            }
+        }
 
         // Enrich (geo/ASN + reverse DNS), then tag.
         enrich_host(&mut host, &datasets.geo, &enrich_cfg).await;

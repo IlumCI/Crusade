@@ -98,7 +98,7 @@ impl Host {
 }
 
 /// Transport protocol a service was reached over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Transport {
     Tcp,
@@ -150,6 +150,11 @@ pub struct Service {
     /// Crusade never submits credentials or attempts to authenticate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthState>,
+    /// Set when a rescan probed this port and got no answer: the service is
+    /// pending eviction (see [`crate::lifecycle`]). `None` = live.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_rfc3339")]
+    pub pending_since: Option<OffsetDateTime>,
+    /// Last time the service was actually observed answering.
     #[serde(with = "time::serde::rfc3339")]
     pub observed_at: OffsetDateTime,
 }
@@ -183,6 +188,7 @@ impl Service {
             screenshot: None,
             ics: None,
             auth: None,
+            pending_since: None,
             observed_at: OffsetDateTime::now_utc(),
         }
     }

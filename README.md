@@ -72,6 +72,18 @@ crusade similar --like 203.0.113.7:8080 --filter 'country:DE'
 crusade embed                                     # backfill vectors for an existing index
 ```
 
+### Service lifecycle
+
+`monitor` rescans the default ports *and* every port already known on a host,
+so services that go away are noticed. A probed port that stays silent is not
+deleted on the first miss: it is marked **pending**, stays visible (greyed in
+the web UI, listed by `crusade host`), and is evicted only after
+`[lifecycle] evict_after_hours` (default 72 h). A host left with no services
+is dropped after `forget_after_days` (default 60). Eviction raises a
+`service-gone` alert. Ports a run did not probe are never touched. This
+mirrors the policy Censys published (SIGCOMM 2025), where a single miss is
+usually loss or throttling rather than a real change.
+
 Semantic search uses the Model2Vec static embedding model `potion-base-8M`
 (~30 MB, 256 dimensions, CPU-only). Every service is embedded at ingest from
 its product, title, server, certificate names and banner; vectors are stored

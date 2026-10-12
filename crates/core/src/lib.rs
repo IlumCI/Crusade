@@ -3,6 +3,7 @@
 //! This crate is deliberately free of I/O and database dependencies so it can
 //! be unit-tested in isolation and reused by every other crate.
 
+pub mod lifecycle;
 pub mod model;
 pub mod query;
 

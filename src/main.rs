@@ -597,6 +597,24 @@ fn cmd_host(cfg: &Config, ip: &str, json: bool) -> Result<()> {
                         );
                     }
                 }
+                let pending: Vec<String> = h
+                    .services
+                    .iter()
+                    .filter(|s| s.pending_since.is_some())
+                    .map(|s| {
+                        format!(
+                            "{}/{}",
+                            s.port,
+                            match s.transport {
+                                crusade_core::Transport::Tcp => "tcp",
+                                crusade_core::Transport::Udp => "udp",
+                            }
+                        )
+                    })
+                    .collect();
+                if !pending.is_empty() {
+                    println!("  pending eviction: {}", pending.join(", "));
+                }
                 if let Some(a) = &h.honeypot {
                     println!("  honeypot score: {:.0}%", a.score * 100.0);
                     for e in &a.evidence {
@@ -672,8 +690,34 @@ async fn cmd_monitor(
                 store.get_host(&ip_str)?
             };
 
+            // Rescan the default ports *and* every port already known on this
+            // host, so a service that has gone away is actually re-probed and
+            // can move through pending to eviction.
+            let mut ports = tcp_ports.clone();
+            let mut udp_ports: Vec<u16> = Vec::new();
+            if let Some(h) = &before {
+                for svc in &h.services {
+                    match svc.transport {
+                        crusade_core::Transport::Tcp => ports.push(svc.port),
+                        crusade_core::Transport::Udp => udp_ports.push(svc.port),
+                    }
+                }
+            }
+            ports.sort_unstable();
+            ports.dedup();
+            udp_ports.sort_unstable();
+            udp_ports.dedup();
+            let udp = crusade_scan::udp_worklist(&[ip], &udp_ports, &bl);
+            let scope = std::collections::BTreeMap::from([(
+                ip,
+                crusade_core::lifecycle::Scope::new(
+                    ports.iter().copied(),
+                    udp_ports.iter().copied(),
+                ),
+            )]);
+
             let scan_cfg = ScanConfig {
-                ports: tcp_ports.clone(),
+                ports,
                 connect_timeout: cfg.connect_timeout(),
                 rate: RateLimiterParams {
                     conn_per_sec: cfg.scan.rate_per_sec,
@@ -684,9 +728,10 @@ async fn cmd_monitor(
             };
             let open = TcpScanner::new(scan_cfg, bl.clone()).scan(&[ip]).await;
             let mut store = Store::open(&cfg.database.path)?;
-            let hosts = pipeline::process(
+            let hosts = pipeline::process_scoped(
                 open,
-                Vec::new(),
+                udp,
+                scope,
                 datasets.clone(),
                 cfg,
                 &mut store,
@@ -730,6 +775,12 @@ fn record_changes(
         let detail = format!("new open port {p}");
         println!("[ALERT] {ip} {detail}");
         store.record_alert(&ip, "new-port", &detail)?;
+    }
+
+    for p in old_ports.difference(&new_ports) {
+        let detail = format!("port {p} no longer listening (evicted)");
+        println!("[ALERT] {ip} {detail}");
+        store.record_alert(&ip, "service-gone", &detail)?;
     }
 
     let old_cves: BTreeSet<&str> = before

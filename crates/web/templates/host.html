@@ -31,7 +31,7 @@
 <h2 class="section-title">Services ({{ services.len() }})</h2>
 {% for s in services %}
 <div class="svc">
-  <h3>{{ s.port }}/{{ s.transport }}{% if let Some(svc) = s.service %} · {{ svc }}{% endif %}{% if let Some(auth) = s.auth %} <span class="chip{% if s.auth_open %} vuln{% else %} ok{% endif %}">auth:{{ auth }}</span>{% endif %}</h3>
+  <h3>{{ s.port }}/{{ s.transport }}{% if let Some(svc) = s.service %} · {{ svc }}{% endif %}{% if let Some(auth) = s.auth %} <span class="chip{% if s.auth_open %} vuln{% else %} ok{% endif %}">auth:{{ auth }}</span>{% endif %}{% if let Some(since) = s.pending_since %} <span class="chip" title="probed but silent since {{ since }}; pending eviction">stale since {{ since }}</span>{% endif %}</h3>
   <div class="kv">
     {% if let Some(p) = s.product %}<b>{{ p }}</b>{% if let Some(v) = s.version %} {{ v }}{% endif %} · {% endif %}
     {% if let Some(cpe) = s.cpe %}{{ cpe }} · {% endif %}
