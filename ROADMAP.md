@@ -60,3 +60,10 @@ The iconic Shodan pivots + the other half of coverage (UDP) + operations.
 Cross-host distribution (networked job store, not single-host SQLite),
 RDP/VNC screenshot protocols, more ICS/OT coverage, a client-side static demo
 of the UI, alert transports beyond webhook/email (PagerDuty, etc.).
+
+## v5 — PLANNED
+Frontier upgrade derived from a 2026 literature survey: tiered + predictive
+port discovery, protocol-agnostic probing, service lifecycle/eviction, IPv6
+dealiasing and target generation, QUIC, NVD API 2.0 migration, honeypot
+scoring, and CPU-only embedded models (semantic search, NL->query, anomaly
+detection, infrastructure graph). See `docs/FRONTIER.md`.
