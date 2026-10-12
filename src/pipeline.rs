@@ -13,52 +13,138 @@ use crusade_embed::Embedder;
 use crusade_enrich::{enrich_host, EnrichConfig, GeoAsnDb, Screenshotter};
 use crusade_probe::{Fingerprints, ProbeConfig};
 use crusade_store::Store;
-use crusade_vuln::{HoneypotRules, HoneypotScorer, PortStats, VulnDb};
+use crusade_vuln::{CveCache, HoneypotRules, HoneypotScorer, PortStats, VulnDb};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tracing::{info, warn};
 
-/// Loadable reference data shared by every host in a run.
+/// Reference data shared by every host in a run, loaded on first use.
+///
+/// Loading everything up front cost about seven seconds per invocation, almost
+/// all of it parsing the NVD feeds — paid in full even by a scan that found no
+/// open ports and tagged nothing. Each dataset is now behind a [`OnceCell`], so
+/// a run only pays for what it actually consults, and the CVE feeds are read
+/// through an indexed on-disk cache ([`CveCache`]) rather than parsed into
+/// memory at all.
+///
+/// Each getter is infallible: a missing or broken dataset degrades that one
+/// feature (with a warning) instead of failing the scan.
 pub struct Datasets {
-    pub fingerprints: Fingerprints,
-    pub geo: GeoAsnDb,
-    pub vulns: VulnDb,
-    pub honeypot_rules: HoneypotRules,
-    /// Embedding model for semantic search; `None` when not installed.
-    pub embedder: Option<Embedder>,
+    dir: PathBuf,
+    nmap_probes: PathBuf,
+    fingerprints: OnceLock<Fingerprints>,
+    geo: OnceLock<GeoAsnDb>,
+    vulns: OnceLock<VulnSource>,
+    honeypot_rules: OnceLock<HoneypotRules>,
+    embedder: OnceLock<Option<Embedder>>,
+}
+
+/// Where CVE data is coming from for this run.
+pub enum VulnSource {
+    /// The indexed on-disk cache: opened, not parsed.
+    Cache(Box<CveCache>),
+    /// The raw feeds, parsed into memory. Used when no usable cache exists.
+    Memory(Box<VulnDb>),
+}
+
+impl VulnSource {
+    /// Append heuristic, CVE and exploit tags to `host`.
+    pub fn tag_host(&self, host: &mut Host) {
+        match self {
+            VulnSource::Cache(c) => c.tag_host(host),
+            VulnSource::Memory(db) => db.tag_host(host),
+        }
+    }
 }
 
 impl Datasets {
-    /// Load fingerprints (required), plus geo/ASN and CVE feeds (best-effort:
-    /// missing feeds degrade gracefully rather than failing the scan).
+    /// Note where the data lives. Nothing is read until it is needed.
     pub fn load(cfg: &Config) -> Result<Datasets> {
-        let fingerprints = Fingerprints::load(&cfg.data.nmap_probes).unwrap_or_else(|e| {
-            warn!("could not load nmap probes ({e}); fingerprinting disabled");
-            Fingerprints::parse("")
-        });
-
-        let dir = &cfg.data.dir;
-        let geo = load_geo(dir).unwrap_or_else(|e| {
-            warn!("geo/ASN data unavailable ({e}); run `crusade update-data`");
-            GeoAsnDb::default()
-        });
-        let vulns = load_vulns(dir).unwrap_or_else(|e| {
-            warn!("vuln feeds unavailable ({e}); only heuristic tags will apply");
-            VulnDb::new()
-        });
-
-        let honeypot_rules = load_honeypot_rules(dir);
-        let embedder = load_embedder(dir);
-
         Ok(Datasets {
-            fingerprints,
-            geo,
-            vulns,
-            honeypot_rules,
-            embedder,
+            dir: cfg.data.dir.clone(),
+            nmap_probes: cfg.data.nmap_probes.clone(),
+            fingerprints: OnceLock::new(),
+            geo: OnceLock::new(),
+            vulns: OnceLock::new(),
+            honeypot_rules: OnceLock::new(),
+            embedder: OnceLock::new(),
         })
+    }
+
+    /// nmap service fingerprints. Empty (so matching simply never fires) when
+    /// the probe file is missing.
+    pub fn fingerprints(&self) -> &Fingerprints {
+        self.fingerprints.get_or_init(|| {
+            let t = std::time::Instant::now();
+            let fp = Fingerprints::load(&self.nmap_probes).unwrap_or_else(|e| {
+                warn!("could not load nmap probes ({e}); fingerprinting disabled");
+                Fingerprints::parse("")
+            });
+            info!(ms = t.elapsed().as_millis() as u64, "loaded nmap probes");
+            fp
+        })
+    }
+
+    /// GeoIP/ASN lookup tables.
+    pub fn geo(&self) -> &GeoAsnDb {
+        self.geo.get_or_init(|| {
+            let t = std::time::Instant::now();
+            let db = load_geo(&self.dir).unwrap_or_else(|e| {
+                warn!("geo/ASN data unavailable ({e}); run `crusade update-data`");
+                GeoAsnDb::default()
+            });
+            info!(ms = t.elapsed().as_millis() as u64, "loaded geo/ASN data");
+            db
+        })
+    }
+
+    /// CVE data, preferring the indexed cache.
+    pub fn vulns(&self) -> &VulnSource {
+        self.vulns.get_or_init(|| {
+            let t = std::time::Instant::now();
+            match CveCache::open(&self.dir) {
+                Ok(Some(cache)) => {
+                    info!(
+                        ms = t.elapsed().as_millis() as u64,
+                        cves = cache.len(),
+                        "opened CVE cache"
+                    );
+                    return VulnSource::Cache(Box::new(cache));
+                }
+                Ok(None) => warn!(
+                    "no usable CVE cache; parsing the feeds directly \
+                     (run `crusade update-data` to build one)"
+                ),
+                Err(e) => warn!("CVE cache unreadable ({e:#}); parsing the feeds directly"),
+            }
+            let db = load_vulns(&self.dir).unwrap_or_else(|e| {
+                warn!("vuln feeds unavailable ({e}); only heuristic tags will apply");
+                VulnDb::new()
+            });
+            info!(
+                ms = t.elapsed().as_millis() as u64,
+                cves = db.len(),
+                "parsed CVE feeds into memory"
+            );
+            VulnSource::Memory(Box::new(db))
+        })
+    }
+
+    /// Honeypot signature pack.
+    pub fn honeypot_rules(&self) -> &HoneypotRules {
+        self.honeypot_rules
+            .get_or_init(|| load_honeypot_rules(&self.dir))
+    }
+
+    /// Embedding model, when installed.
+    pub fn embedder(&self) -> Option<&Embedder> {
+        self.embedder
+            .get_or_init(|| load_embedder(&self.dir))
+            .as_ref()
     }
 }
 
@@ -269,12 +355,16 @@ pub async fn process_scoped(
         reverse_dns: true,
     };
     let timeout = cfg.connect_timeout();
-    let honeypot = honeypot_scorer(&datasets.honeypot_rules, store);
+    let honeypot = honeypot_scorer(datasets.honeypot_rules(), store);
 
     let policy = cfg.lifecycle.policy();
     let now = time::OffsetDateTime::now_utc();
 
+    // Hosts are written in batches: one transaction per host is dominated by
+    // commit cost (see `Store::upsert_hosts`). Vectors are written alongside,
+    // since they are keyed by the host that produced them.
     let mut hosts = Vec::new();
+    let mut batch: Vec<Host> = Vec::with_capacity(UPSERT_BATCH);
     for (ip, (mut tcp, mut udp)) in by_host {
         tcp.sort_unstable();
         tcp.dedup();
@@ -294,7 +384,7 @@ pub async fn process_scoped(
             let ds = datasets.clone();
             let pc = probe_cfg.clone();
             tcp_tasks.push(async move {
-                Some(crusade_probe::probe_service(ip, port, &ds.fingerprints, &pc).await)
+                Some(crusade_probe::probe_service(ip, port, ds.fingerprints(), &pc).await)
             });
         }
         // Probe UDP ports concurrently (protocol probes; may yield nothing).
@@ -335,8 +425,8 @@ pub async fn process_scoped(
         }
 
         // Enrich (geo/ASN + reverse DNS), then tag.
-        enrich_host(&mut host, &datasets.geo, &enrich_cfg).await;
-        datasets.vulns.tag_host(&mut host);
+        enrich_host(&mut host, datasets.geo(), &enrich_cfg).await;
+        datasets.vulns().tag_host(&mut host);
         honeypot.apply(&mut host);
 
         // Screenshots of web services (best-effort), saved under data/screens.
@@ -345,15 +435,39 @@ pub async fn process_scoped(
         }
 
         info!(ip = %ip, services = host.services.len(), tags = host.tags.len(), "host processed");
-        store.upsert_host(&host)?;
-        if let Some(embedder) = &datasets.embedder {
-            let vecs = embed_host(embedder, &host);
-            store.set_service_vectors(&ip.to_string(), embedder.name(), &vecs)?;
+        batch.push(host);
+        if batch.len() >= UPSERT_BATCH {
+            flush(store, &mut batch, datasets.as_ref(), &mut hosts)?;
         }
-        hosts.push(host);
     }
+    flush(store, &mut batch, datasets.as_ref(), &mut hosts)?;
 
     Ok(hosts)
+}
+
+/// Hosts per write transaction. Large enough that commit cost stops
+/// dominating, small enough that an interrupted scan loses little.
+const UPSERT_BATCH: usize = 200;
+
+/// Write a batch of hosts and their embedding vectors, then hand them on.
+fn flush(
+    store: &mut Store,
+    batch: &mut Vec<Host>,
+    datasets: &Datasets,
+    out: &mut Vec<Host>,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    store.upsert_hosts(batch)?;
+    if let Some(embedder) = datasets.embedder() {
+        for host in batch.iter() {
+            let vecs = embed_host(embedder, host);
+            store.set_service_vectors(&host.ip.to_string(), embedder.name(), &vecs)?;
+        }
+    }
+    out.append(batch);
+    Ok(())
 }
 
 /// Capture a screenshot of each web-ish service on the host and record the

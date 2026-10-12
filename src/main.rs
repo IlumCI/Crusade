@@ -1052,7 +1052,9 @@ fn cmd_stats(cfg: &Config, raw: &str, top: usize) -> Result<()> {
     let q = query::parse(raw).map_err(|e| anyhow::anyhow!("{e}"))?;
     let store = Store::open(&cfg.database.path)?;
     let total = store.count(&q)?;
-    let facets = store.facets_for_query(&q, top)?;
+    // Cached: faceting the whole index is a full scan, and `stats` is the
+    // command most likely to be run repeatedly against an unchanged dataset.
+    let facets = store.facets_cached(&q, top)?;
     println!(
         "Stats for {:?} — {total} host(s)\n",
         if raw.is_empty() { "*" } else { raw }

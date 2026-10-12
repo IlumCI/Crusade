@@ -174,6 +174,36 @@ whose provider permits scanning, a published abuse contact, reverse DNS
 identity and a working opt-out are what make wide scanning legitimate; see
 *Responsible use* above.
 
+## Lazy loading and caching
+
+Nothing is read until something needs it, and expensive derived data is built
+once rather than per run.
+
+| | before | after |
+|---|---|---|
+| scan that finds no open ports | 7.58 s | **0.008 s** (nothing loads) |
+| CVE data ready to query | 6,029 ms (parse ~470 MB JSON) | **1 ms** (open indexed cache) |
+| facets over the whole index, repeat view | 2,422 ms | **0.1 ms** |
+
+* **Datasets load on first use.** `Datasets` holds each dataset behind a
+  `OnceLock`: nmap probes load when a banner needs fingerprinting, geo/ASN when
+  a host needs enrichment, the embedding model only if embedding is on. A run
+  that discovers nothing loads nothing.
+* **CVE data is an indexed cache, not a parse.** `update-data` parses the feeds
+  once into `data/cve-cache.db` (319k CVEs, 2.6M match rules) indexed by
+  product; scans open it and query per product, so memory stays flat instead of
+  holding every CVE. A `meta` fingerprint of the source feeds means a newly
+  downloaded feed rebuilds the cache rather than being silently ignored. Delete
+  the file and it rebuilds; without it, scans fall back to parsing the feeds.
+* **An in-process memo** caches product lookups, since one scan meets the same
+  few products repeatedly.
+* **Facets are cached against a write generation.** Every write transaction
+  bumps a counter, so a cached aggregate is served only while the data behind
+  it is unchanged, and is recomputed otherwise — no staleness window to reason
+  about.
+* **Writes are batched.** The pipeline writes hosts 200 per transaction, and
+  `Store::upsert_hosts` is the bulk entry point.
+
 ## Scale and performance
 
 `cargo run --release -p crusade-store --example ingest_bench -- <hosts> <services> <batch>`

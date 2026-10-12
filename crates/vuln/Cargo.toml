@@ -13,3 +13,4 @@ tracing.workspace = true
 time.workspace = true
 csv = "1"
 toml.workspace = true
+rusqlite.workspace = true

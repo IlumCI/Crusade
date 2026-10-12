@@ -61,7 +61,7 @@ impl CpeMatch {
     /// Product match is case-insensitive. When the service version is unknown
     /// we only match a rule that is unconstrained (affects every version), to
     /// avoid flooding unknown services with speculative CVEs.
-    fn applies(&self, product: &str, version: Option<&str>) -> bool {
+    pub(crate) fn applies(&self, product: &str, version: Option<&str>) -> bool {
         if !self.product.eq_ignore_ascii_case(product) {
             return false;
         }
@@ -207,6 +207,16 @@ impl VulnDb {
     /// case-insensitively).
     pub fn exploits_for(&self, cve: &str) -> Option<&ExploitRefs> {
         self.exploits.get(&cve.to_uppercase())
+    }
+
+    /// The parsed CVE entries, for building the on-disk cache.
+    pub fn entries(&self) -> &[CveEntry] {
+        &self.cves
+    }
+
+    /// The exploit index, for building the on-disk cache.
+    pub fn exploits(&self) -> &HashMap<String, ExploitRefs> {
+        &self.exploits
     }
 
     /// Number of CVEs loaded.
@@ -490,28 +500,42 @@ pub struct ParsedCpe {
     pub version: Option<String>,
 }
 
-/// Parse a CPE 2.3 formatted-string URI, e.g.
-/// `cpe:2.3:a:nginx:nginx:1.18.0:*:*:*:*:*:*:*`.
+/// Parse a CPE name, in either of the two forms that occur in practice:
 ///
-/// Returns `None` for anything that is not a `cpe:2.3:` string. Fields set to
-/// `*` (ANY) or `-` (NA) become `None`.
+/// * CPE 2.3 formatted string, as NVD publishes:
+///   `cpe:2.3:a:nginx:nginx:1.18.0:*:*:*:*:*:*:*`
+/// * CPE 2.2 URI, as `nmap-service-probes` emits and Crusade therefore stores:
+///   `cpe:/a:igor_sysoev:nginx:1.18.0`
+///
+/// Returns `None` for anything else. Fields set to `*` (ANY) or `-` (NA)
+/// become `None`, as does a missing trailing field.
 pub fn parse_cpe(cpe: &str) -> Option<ParsedCpe> {
     let parts: Vec<&str> = cpe.split(':').collect();
-    // cpe : 2.3 : part : vendor : product : version : ...
-    if parts.len() < 6 || parts[0] != "cpe" || parts[1] != "2.3" {
+    if parts.first() != Some(&"cpe") {
         return None;
     }
-    let field = |s: &str| -> Option<String> {
-        if s == "*" || s == "-" || s.is_empty() {
-            None
-        } else {
-            Some(s.to_string())
+    // 2.3: cpe:2.3:part:vendor:product:version:...
+    // 2.2: cpe:/part:vendor:product:version
+    let offset = match parts.get(1) {
+        Some(&"2.3") => 2,
+        Some(p) if p.starts_with('/') => 1,
+        _ => return None,
+    };
+    let field = |i: usize| -> Option<String> {
+        match parts.get(i) {
+            None | Some(&"*") | Some(&"-") | Some(&"") => None,
+            Some(s) => Some(s.to_string()),
         }
     };
+    // part / vendor / product / version follow the prefix in both forms.
+    let (vendor, product, version) = (offset + 1, offset + 2, offset + 3);
+    if parts.len() <= product {
+        return None;
+    }
     Some(ParsedCpe {
-        vendor: field(parts[3]),
-        product: field(parts[4]),
-        version: field(parts[5]),
+        vendor: field(vendor),
+        product: field(product),
+        version: field(version),
     })
 }
 
@@ -545,7 +569,7 @@ pub fn version_cmp(a: &str, b: &str) -> Ordering {
 }
 
 /// Trim a CVE description down to a short, single-line tag detail.
-fn short_detail(desc: &str) -> String {
+pub(crate) fn short_detail(desc: &str) -> String {
     let one_line = desc.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.chars().count() <= DETAIL_MAX {
         one_line
@@ -962,5 +986,37 @@ mod tests {
         assert_eq!(a.version, b.version);
         assert_eq!(a.version_start_including, b.version_start_including);
         assert_eq!(a.version_end_excluding, b.version_end_excluding);
+    }
+
+    #[test]
+    fn parses_both_cpe_generations() {
+        // 2.3, as NVD publishes.
+        let c = parse_cpe("cpe:2.3:a:nginx:nginx:1.18.0:*:*:*:*:*:*:*").unwrap();
+        assert_eq!(c.vendor.as_deref(), Some("nginx"));
+        assert_eq!(c.product.as_deref(), Some("nginx"));
+        assert_eq!(c.version.as_deref(), Some("1.18.0"));
+
+        // 2.2 URI, as nmap emits and Crusade stores.
+        let c = parse_cpe("cpe:/a:igor_sysoev:nginx:1.18.0").unwrap();
+        assert_eq!(c.vendor.as_deref(), Some("igor_sysoev"));
+        assert_eq!(c.product.as_deref(), Some("nginx"));
+        assert_eq!(c.version.as_deref(), Some("1.18.0"));
+
+        // 2.2 without a version is still usable for the product.
+        let c = parse_cpe("cpe:/a:apache:http_server").unwrap();
+        assert_eq!(c.product.as_deref(), Some("http_server"));
+        assert_eq!(c.version, None);
+
+        // ANY/NA fields read as unknown.
+        let c = parse_cpe("cpe:2.3:a:vendor:prod:*:*:*:*:*:*:*:*").unwrap();
+        assert_eq!(c.version, None);
+        let c = parse_cpe("cpe:/o:vendor:prod:-").unwrap();
+        assert_eq!(c.version, None);
+
+        // Not CPEs.
+        assert!(parse_cpe("").is_none());
+        assert!(parse_cpe("nginx/1.18.0").is_none());
+        assert!(parse_cpe("cpe:2.4:a:v:p:1").is_none());
+        assert!(parse_cpe("cpe:/a:vendor").is_none(), "no product");
     }
 }

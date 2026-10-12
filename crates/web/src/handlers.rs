@@ -191,12 +191,16 @@ pub async fn stats(
         match (!scope.is_empty()).then(|| parse(scope)) {
             Some(Ok(query)) => {
                 let count = store.count(&query).unwrap_or(0);
-                let facets = store.facets_for_query(&query, 20).unwrap_or_default();
+                let facets = store.facets_cached(&query, 20).unwrap_or_default();
                 (count, facets, true)
             }
             _ => {
                 let count = store.host_count().unwrap_or(0);
-                let facets = store.facets(20).unwrap_or_default();
+                // Faceting the whole index is a full scan; served from cache
+                // unless a write has happened since it was computed.
+                let facets = store
+                    .facets_cached(&crusade_core::query::Query::default(), 20)
+                    .unwrap_or_default();
                 (count, facets, false)
             }
         }

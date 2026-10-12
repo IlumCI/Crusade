@@ -137,3 +137,14 @@ CREATE TABLE IF NOT EXISTS service_vec (
     FOREIGN KEY (ip) REFERENCES hosts(ip) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_service_vec_model ON service_vec(model);
+
+-- Cached facet aggregates. Faceting the whole index is a full scan of the
+-- services and tags tables, far too slow to run per page view. Each row keeps
+-- the write generation it was computed at, so a cache entry is used only while
+-- the data behind it has not changed.
+CREATE TABLE IF NOT EXISTS facet_cache (
+    key        TEXT PRIMARY KEY,   -- query (empty = whole dataset) + top_n
+    generation INTEGER NOT NULL,
+    computed_at INTEGER NOT NULL,
+    value      TEXT NOT NULL       -- Facets as JSON
+);

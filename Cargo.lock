@@ -653,6 +653,7 @@ dependencies = [
  "anyhow",
  "crusade-core",
  "csv",
+ "rusqlite",
  "serde",
  "serde_json",
  "time",

@@ -87,6 +87,20 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Note that the data behind cached aggregates has changed.
+///
+/// Bumped once per write transaction rather than per host: a batch of 500
+/// hosts invalidates the cache exactly as a single host does, and one extra
+/// statement per batch is free.
+fn bump_generation(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES ('write_generation', '1')
+         ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Write one host's current state, scan history, tags and FTS row inside an
 /// existing transaction. Shared by [`Store::upsert_host`] and
 /// [`Store::upsert_hosts`].
@@ -346,14 +360,14 @@ pub struct Store {
 }
 
 /// One row in a facet (e.g. a port and how many hosts expose it).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Facet {
     pub value: String,
     pub count: i64,
 }
 
 /// The faceted breakdown shown on the stats page.
-#[derive(Debug, Clone, serde::Serialize, Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct Facets {
     pub ports: Vec<Facet>,
     pub products: Vec<Facet>,
@@ -436,6 +450,7 @@ impl Store {
                 params![ip, tag.name, tag.cve, tag.detail],
             )?;
         }
+        bump_generation(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -457,6 +472,7 @@ impl Store {
             tx.execute(&format!("DELETE FROM {table} WHERE ip = ?1"), params![ip])?;
         }
         tx.execute("DELETE FROM hosts WHERE ip = ?1", params![ip])?;
+        bump_generation(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -587,6 +603,7 @@ impl Store {
     pub fn upsert_host(&mut self, host: &Host) -> Result<()> {
         let tx = self.conn.transaction()?;
         write_host(&tx, host)?;
+        bump_generation(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -597,10 +614,14 @@ impl Store {
     /// backfills should batch rather than calling [`Store::upsert_host`] in a
     /// loop. Either every host in the batch is written or none is.
     pub fn upsert_hosts(&mut self, hosts: &[Host]) -> Result<()> {
+        if hosts.is_empty() {
+            return Ok(());
+        }
         let tx = self.conn.transaction()?;
         for host in hosts {
             write_host(&tx, host)?;
         }
+        bump_generation(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -665,6 +686,67 @@ impl Store {
                 r.get(0)
             })?;
         Ok((n, n < cap))
+    }
+
+    /// The current write generation (0 before any write).
+    pub fn write_generation(&self) -> i64 {
+        self.conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'write_generation'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Facets for `query` (empty = whole dataset), served from the cache when
+    /// the data behind it has not changed since it was computed.
+    ///
+    /// Faceting the whole index is a full scan — seconds at a few hundred
+    /// thousand hosts — and the stats page would otherwise pay it on every
+    /// view. Writes bump a generation counter, so a stale entry is never
+    /// served: it is recomputed and replaced.
+    pub fn facets_cached(&self, query: &Query, top_n: usize) -> Result<Facets> {
+        let rendered = query.to_string();
+        let key = format!("{top_n}:{rendered}");
+        let generation = self.write_generation();
+
+        let hit: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM facet_cache WHERE key = ?1 AND generation = ?2",
+                params![key, generation],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(json) = hit {
+            if let Ok(facets) = serde_json::from_str(&json) {
+                return Ok(facets);
+            }
+        }
+
+        let facets = if rendered.is_empty() {
+            self.facets(top_n)?
+        } else {
+            self.facets_for_query(query, top_n)?
+        };
+        // Best-effort write-back: a read-only or locked database should still
+        // serve the page.
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO facet_cache (key, generation, computed_at, value)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                key,
+                generation,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+                serde_json::to_string(&facets)?
+            ],
+        );
+        Ok(facets)
     }
 
     /// Compute the top-N facets across the whole dataset.

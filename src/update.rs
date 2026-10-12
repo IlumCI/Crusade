@@ -54,11 +54,64 @@ pub async fn update_data(cfg: &Config) -> Result<()> {
         eprintln!("  ({failed} NVD feed(s) failed; rerun update-data to retry)");
     }
 
+    // Parse the feeds once, here, into an indexed cache. Scans then open it
+    // instead of re-parsing ~470 MB of JSON per invocation.
+    match build_cve_cache(dir) {
+        Ok((cves, rules)) => eprintln!(
+            "  → {} ({cves} CVEs, {rules} match rules)",
+            dir.join(crusade_vuln::CACHE_FILE).display()
+        ),
+        Err(e) => eprintln!("  (CVE cache not built: {e:#}; scans will parse the feeds)"),
+    }
+
     println!(
         "Datasets updated in {} ({kept} matchable CVEs from NVD).",
         dir.display()
     );
     Ok(())
+}
+
+/// Parse every feed in `dir` and write the indexed CVE cache.
+fn build_cve_cache(dir: &Path) -> Result<(usize, usize)> {
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    let name = p.file_name().unwrap_or_default().to_string_lossy();
+                    name.starts_with("nvdcve-") && name.ends_with(".json")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    paths.sort();
+
+    let mut entries = Vec::new();
+    for path in &paths {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        match crusade_vuln::load_nvd(&text) {
+            Ok(parsed) => entries.extend(parsed),
+            Err(e) => eprintln!("  (skipping {}: {e:#})", path.display()),
+        }
+    }
+    if entries.is_empty() {
+        anyhow::bail!("no NVD feeds to index");
+    }
+    // Later feeds win, matching how a scan would read them.
+    let kev = match std::fs::read_to_string(dir.join("known_exploited_vulnerabilities.json")) {
+        Ok(txt) => crusade_vuln::load_kev(&txt)?,
+        Err(_) => Default::default(),
+    };
+    let mut db = crusade_vuln::VulnDb::from_entries(entries, kev.clone());
+    let edb = std::fs::read_to_string(dir.join("files_exploits.csv")).ok();
+    let msf = std::fs::read_to_string(dir.join("modules_metadata_base.json")).ok();
+    if edb.is_some() || msf.is_some() {
+        let _ = db.load_exploits(edb.as_deref(), msf.as_deref());
+    }
+    let entries = db.entries();
+    let rules = crusade_vuln::CveCache::build(dir, entries, &kev, db.exploits())?;
+    Ok((entries.len(), rules))
 }
 
 /// Fetch the default Model2Vec embedding model (~30 MB) from the Hugging

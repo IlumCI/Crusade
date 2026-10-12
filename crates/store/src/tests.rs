@@ -522,3 +522,78 @@ fn capped_count_reports_whether_it_is_exact() {
     let none = parse("port:9999").unwrap();
     assert_eq!(store.count_capped(&none, 10).unwrap(), (0, true));
 }
+
+#[test]
+fn facet_cache_serves_repeats_and_invalidates_on_write() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.60", 80, "nginx"))
+        .unwrap();
+    store
+        .upsert_host(&host_with("192.0.2.61", 443, "nginx"))
+        .unwrap();
+
+    let all = parse("").unwrap();
+    let gen1 = store.write_generation();
+    assert!(gen1 > 0, "writes bump the generation");
+
+    let first = store.facets_cached(&all, 10).unwrap();
+    assert_eq!(first.ports.len(), 2);
+    // Served from cache: same generation, same answer.
+    let second = store.facets_cached(&all, 10).unwrap();
+    assert_eq!(
+        second
+            .ports
+            .iter()
+            .map(|f| f.value.clone())
+            .collect::<Vec<_>>(),
+        first
+            .ports
+            .iter()
+            .map(|f| f.value.clone())
+            .collect::<Vec<_>>()
+    );
+    let cached: i64 = store
+        .conn
+        .query_row("SELECT count(*) FROM facet_cache", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(cached, 1);
+
+    // A new host must not be served a stale aggregate.
+    store
+        .upsert_host(&host_with("192.0.2.62", 22, "OpenSSH"))
+        .unwrap();
+    assert!(store.write_generation() > gen1);
+    let third = store.facets_cached(&all, 10).unwrap();
+    assert_eq!(third.ports.len(), 3, "cache was recomputed after the write");
+    assert!(third.products.iter().any(|f| f.value == "OpenSSH"));
+
+    // A scoped query is cached separately from the whole dataset.
+    let scoped = parse("port:80").unwrap();
+    let s = store.facets_cached(&scoped, 10).unwrap();
+    assert_eq!(s.ports.len(), 1);
+    let keys: i64 = store
+        .conn
+        .query_row("SELECT count(*) FROM facet_cache", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(keys, 2);
+
+    // Deleting a host invalidates too.
+    let gen = store.write_generation();
+    store.delete_host("192.0.2.62").unwrap();
+    assert!(store.write_generation() > gen);
+    assert_eq!(store.facets_cached(&all, 10).unwrap().ports.len(), 2);
+
+    // Re-scoring (tags only) invalidates, since tags are faceted.
+    let mut h = store.get_host("192.0.2.60").unwrap().unwrap();
+    h.tags.push(crusade_core::model::Tag::simple("honeypot"));
+    let gen = store.write_generation();
+    store.update_derived(&h).unwrap();
+    assert!(store.write_generation() > gen);
+    assert!(store
+        .facets_cached(&all, 10)
+        .unwrap()
+        .tags
+        .iter()
+        .any(|f| f.value == "honeypot"));
+}

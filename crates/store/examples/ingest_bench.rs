@@ -149,9 +149,18 @@ fn main() -> anyhow::Result<()> {
     let t = Instant::now();
     let f = store.facets_for_query(&parse("")?, 15)?;
     println!(
-        "facets (all): {} ports, {} products in {:.0}ms",
+        "facets (all, uncached):  {} ports, {} products in {:>7.0}ms",
         f.ports.len(),
         f.products.len(),
+        t.elapsed().as_secs_f64() * 1000.0
+    );
+    let t = Instant::now();
+    let _ = store.facets_cached(&parse("")?, 15)?;
+    let cold = t.elapsed().as_secs_f64() * 1000.0;
+    let t = Instant::now();
+    let _ = store.facets_cached(&parse("")?, 15)?;
+    println!(
+        "facets (all, cached):    first {cold:>7.0}ms, then {:>7.1}ms",
         t.elapsed().as_secs_f64() * 1000.0
     );
 

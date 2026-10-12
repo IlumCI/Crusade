@@ -111,8 +111,9 @@ GeoIP and screenshots today).
    (`crates/core/src/lifecycle.rs`, `[lifecycle]` config, scoped rescans in
    `monitor`); **stateless SYN engine done** (`crates/scan/src/syn.rs`,
    `--discovery-syn`, ~83k probes/s measured vs 166 for connect). D1's tiered
-   scheduler and D2's port prediction still pending, as is the data layer's
-   remaining slow path (faceting the whole index).
+   scheduler and D2's port prediction still pending. The data layer's slow
+   paths are addressed: lazy dataset loading, an indexed on-disk CVE cache,
+   generation-invalidated facet caching and batched writes.
 4. M2 + V2, then M3 (shared embedding/LLM runtime). **M2 done**
    (`crates/embed`, `crusade similar`/`embed`, web `/similar` + per-service
    pivots); V2 and M3 pending.

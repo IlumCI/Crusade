@@ -25,11 +25,13 @@
 //! exploit EXISTS for a matched CVE — it never downloads, runs, or verifies any
 //! exploit. Acting on a tag is left entirely to the operator.
 
+pub mod cache;
 pub mod cve;
 pub mod exploit;
 pub mod heuristics;
 pub mod honeypot;
 
+pub use cache::{source_fingerprint, CveCache, CACHE_FILE};
 pub use cve::{
     load_kev, load_nvd, parse_cpe, to_nvd2_json, version_cmp, CpeMatch, CveEntry, KevCatalog,
     KevEntry, ParsedCpe, VulnDb,
