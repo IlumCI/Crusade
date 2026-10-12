@@ -1,0 +1,29 @@
+# Crusade configuration. Copy to ./crusade.toml and edit.
+
+[database]
+path = "crusade.db"
+
+[scan]
+# Conservative defaults. Connect-and-read only.
+connect_timeout_ms = 3000
+max_concurrent     = 50
+rate_per_sec       = 100          # connection attempts/sec (targeted scans)
+default_ports      = [21,22,23,25,53,80,110,143,443,445,3306,3389,5432,6379,8080,8443,9200,27017]
+allow_private      = false        # true only to scan your OWN rig (127.0.0.1 / LAN)
+blocklist_path     = "blocklist.txt"
+
+[sweep]
+# IPv4 sweep mode is SCAFFOLDED, not run from this machine.
+# A live sweep needs a VPS/ISP that permits scanning and is YOUR responsibility.
+enabled            = false
+rate_per_sec       = 0            # must be set explicitly; no default
+source_identity    = "crusade-scanner"
+abuse_contact      = "research@euroswarms.eu"
+optout_url         = "http://example.org/scan-optout"
+
+[web]
+bind = "127.0.0.1:8088"
+
+[data]
+dir = "data"
+nmap_probes = "/usr/share/nmap/nmap-service-probes"

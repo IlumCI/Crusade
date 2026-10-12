@@ -1,0 +1,110 @@
+//! Configuration loaded from `crusade.toml` (falling back to sane defaults).
+
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub database: Database,
+    pub scan: Scan,
+    pub sweep: Sweep,
+    pub web: Web,
+    pub data: Data,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Database {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Scan {
+    pub connect_timeout_ms: u64,
+    pub max_concurrent: usize,
+    pub rate_per_sec: f64,
+    pub default_ports: Vec<u16>,
+    pub allow_private: bool,
+    pub blocklist_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Sweep {
+    pub enabled: bool,
+    pub rate_per_sec: f64,
+    pub source_identity: String,
+    pub abuse_contact: String,
+    pub optout_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Web {
+    pub bind: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Data {
+    pub dir: PathBuf,
+    pub nmap_probes: PathBuf,
+}
+
+impl Config {
+    /// Load from `path` if it exists, else return defaults.
+    pub fn load(path: &Path) -> anyhow::Result<Config> {
+        if path.exists() {
+            let text = std::fs::read_to_string(path)?;
+            Ok(toml::from_str(&text)?)
+        } else {
+            Ok(Config::default())
+        }
+    }
+
+    pub fn connect_timeout(&self) -> Duration {
+        Duration::from_millis(self.scan.connect_timeout_ms)
+    }
+}
+
+impl Default for Database {
+    fn default() -> Self {
+        Database { path: "crusade.db".into() }
+    }
+}
+impl Default for Scan {
+    fn default() -> Self {
+        Scan {
+            connect_timeout_ms: 3000,
+            max_concurrent: 50,
+            rate_per_sec: 100.0,
+            default_ports: vec![21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 9200, 27017],
+            allow_private: false,
+            blocklist_path: "blocklist.txt".into(),
+        }
+    }
+}
+impl Default for Sweep {
+    fn default() -> Self {
+        Sweep {
+            enabled: false,
+            rate_per_sec: 0.0,
+            source_identity: "crusade-scanner".into(),
+            abuse_contact: String::new(),
+            optout_url: String::new(),
+        }
+    }
+}
+impl Default for Web {
+    fn default() -> Self {
+        Web { bind: "127.0.0.1:8088".into() }
+    }
+}
+impl Default for Data {
+    fn default() -> Self {
+        Data { dir: "data".into(), nmap_probes: "/usr/share/nmap/nmap-service-probes".into() }
+    }
+}

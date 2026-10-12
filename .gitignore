@@ -1,0 +1,9 @@
+/target
+/data/*.tsv
+/data/*.csv
+/data/*.json
+/data/*.gz
+/*.db
+/*.db-wal
+/*.db-shm
+crusade.db*

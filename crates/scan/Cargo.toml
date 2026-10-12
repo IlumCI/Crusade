@@ -1,0 +1,17 @@
+[package]
+name = "crusade-scan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crusade-core.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+time.workspace = true
+ipnet.workspace = true
+futures = "0.3"
+tempfile = "3"

@@ -1,0 +1,291 @@
+//! Crusade web UI: a read-only, Shodan-style browser over already-collected
+//! host data.
+//!
+//! This crate serves an [`axum`] application with a small HTML frontend
+//! (rendered with [`askama`] templates) and a matching JSON API. It never
+//! writes to the datastore — every route locks the shared [`crusade_store::Store`]
+//! only to read.
+//!
+//! Routes:
+//! - `GET /` — search page (query via `?q=&page=`).
+//! - `GET /host/:ip` — host detail (404 page if unknown).
+//! - `GET /stats` — dataset facets and a Leaflet host map.
+//! - `GET /api/search?q=&page=` — JSON `{query,total,page,results}`.
+//! - `GET /api/host/:ip` — JSON [`Host`](crusade_core::model::Host) or 404.
+//! - `GET /api/map` — JSON `[{ip,lat,lon,country}]` for located hosts.
+//! - `GET /healthz` — liveness probe.
+//!
+//! The store is a single rusqlite connection (`Send` but not `Sync`), so it is
+//! shared as an `Arc<Mutex<Store>>` ([`SharedStore`]) and locked per request.
+
+mod handlers;
+mod views;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::{
+    routing::get,
+    Router,
+};
+use crusade_store::Store;
+use tokio::sync::Mutex;
+use tower_http::trace::TraceLayer;
+
+/// Shared, lockable handle to the datastore used as axum router state.
+pub type SharedStore = Arc<Mutex<Store>>;
+
+/// Build the application router over a shared store.
+pub fn router(store: SharedStore) -> Router {
+    Router::new()
+        .route("/", get(handlers::index))
+        .route("/host/:ip", get(handlers::host_detail))
+        .route("/stats", get(handlers::stats))
+        .route("/api/search", get(handlers::api_search))
+        .route("/api/host/:ip", get(handlers::api_host))
+        .route("/api/map", get(handlers::api_map))
+        .route("/healthz", get(handlers::healthz))
+        .with_state(store)
+}
+
+/// Bind `addr` and serve the web UI until the process is terminated.
+pub async fn serve(addr: SocketAddr, store: SharedStore) -> anyhow::Result<()> {
+    let app = router(store).layer(TraceLayer::new_for_http());
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "crusade-web listening");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use crusade_core::model::{Host, HttpInfo, Service, SshInfo, Transport};
+    use http_body_util::BodyExt;
+    use std::net::IpAddr;
+    use tower::ServiceExt; // for `oneshot`
+
+    fn seeded_store() -> SharedStore {
+        let mut store = Store::open_in_memory().expect("open in-memory store");
+
+        let ip: IpAddr = "203.0.113.10".parse().unwrap();
+        let mut host = Host::new(ip);
+        host.country = Some("DE".into());
+        host.asn = Some(3320);
+        host.org = Some("Example Telekom".into());
+        host.hostnames = vec!["web.example.com".into()];
+        host.latitude = Some(52.52);
+        host.longitude = Some(13.405);
+        let mut svc = Service::new(80, Transport::Tcp);
+        svc.service = Some("http".into());
+        svc.product = Some("nginx".into());
+        svc.version = Some("1.25.0".into());
+        svc.banner = Some("HTTP/1.1 200 OK\r\nServer: nginx".into());
+        svc.jarm = Some("27d40d40d29d40d1dc42d43d00041d4689ee210389f4f6b4b5b1b93f92252d".into());
+        svc.http = Some(HttpInfo {
+            status: Some(200),
+            server: Some("nginx".into()),
+            title: Some("Welcome".into()),
+            headers: vec![("server".into(), "nginx".into())],
+            favicon_hash: Some(-247388890),
+            technologies: vec!["nginx".into(), "PHP".into()],
+            security_headers: vec!["Strict-Transport-Security".into()],
+        });
+        svc.ssh = Some(SshInfo {
+            banner: Some("SSH-2.0-OpenSSH_8.9".into()),
+            host_key_type: Some("ssh-ed25519".into()),
+            host_key_sha256: Some("SHA256:abc+def/ghi=".into()),
+            kex_algorithms: vec!["curve25519-sha256".into()],
+            hassh: Some("06046964c022c6407d15a27b12a6a4fb".into()),
+        });
+        host.services.push(svc);
+        store.upsert_host(&host).expect("seed host 1");
+
+        let ip2: IpAddr = "198.51.100.7".parse().unwrap();
+        let mut host2 = Host::new(ip2);
+        host2.country = Some("US".into());
+        let mut svc2 = Service::new(22, Transport::Tcp);
+        svc2.service = Some("ssh".into());
+        svc2.product = Some("OpenSSH".into());
+        host2.services.push(svc2);
+        store.upsert_host(&host2).expect("seed host 2");
+
+        Arc::new(Mutex::new(store))
+    }
+
+    async fn body_string(resp: axum::response::Response) -> String {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn healthz_ok() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_string(resp).await, "ok");
+    }
+
+    #[tokio::test]
+    async fn index_search_shows_host() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?q=port:80")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("203.0.113.10"), "body missing seeded IP: {body}");
+    }
+
+    #[tokio::test]
+    async fn index_bad_query_does_not_500() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?q=port:notaport")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("Could not parse query"), "expected friendly error");
+    }
+
+    #[tokio::test]
+    async fn api_host_known_and_unknown() {
+        let app = router(seeded_store());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/host/203.0.113.10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["ip"], "203.0.113.10");
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/host/192.0.2.99")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn api_search_returns_total() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/search?q=port:80")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(json["total"].as_i64().unwrap() >= 1);
+        assert_eq!(json["results"][0]["ip"], "203.0.113.10");
+    }
+
+    #[tokio::test]
+    async fn api_map_only_located_hosts() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(Request::builder().uri("/api/map").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        // Only host 1 has coordinates.
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["ip"], "203.0.113.10");
+    }
+
+    #[tokio::test]
+    async fn host_page_shows_jarm_and_favicon() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/host/203.0.113.10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        // JARM fingerprint and its pivot link are rendered.
+        assert!(body.contains("JARM"), "host page missing JARM section");
+        assert!(
+            body.contains("27d40d40d29d40d1"),
+            "host page missing JARM value"
+        );
+        // Favicon hash rendered with a clickable pivot to the favicon search.
+        assert!(body.contains("-247388890"), "host page missing favicon hash");
+        assert!(
+            body.contains("/?q=http.favicon.hash%3A-247388890"),
+            "host page missing favicon pivot link: {body}"
+        );
+        // SSH + technologies surfaced as well.
+        assert!(body.contains("SSH-2.0-OpenSSH_8.9"), "host page missing SSH banner");
+        assert!(body.contains("06046964c022c6407d15a27b12a6a4fb"), "host page missing HASSH");
+    }
+
+    #[tokio::test]
+    async fn stats_scoped_query_ok() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/stats?q=port:80")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("Stats for this search"), "expected scoped header");
+    }
+
+    #[tokio::test]
+    async fn stats_page_renders() {
+        let app = router(seeded_store());
+        let resp = app
+            .oneshot(Request::builder().uri("/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("leaflet"), "expected leaflet embed");
+    }
+}

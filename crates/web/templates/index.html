@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Crusade — Search{% endblock %}
+{% block content %}
+<form class="searchbar" method="get" action="/">
+  <input type="text" name="q" value="{{ q }}" placeholder="port:443 country:DE product:nginx &quot;default page&quot;" autofocus>
+  <button type="submit">Search</button>
+</form>
+<div class="hint">Filters: port:, country:, city:, asn:, org:, product:, version:, hostname:, ssl.cn:, net:, transport:, tag:, jarm:, http.favicon.hash:, ssh.hostkey:, hassh:, vuln:, has_vuln:, has_screenshot:, before:, after: — bare words match banners. Prefix a filter with - to negate.</div>
+
+{% if let Some(err) = error %}
+<div class="error">Could not parse query: {{ err }}</div>
+{% endif %}
+
+{% if searched %}
+  {% if error.is_none() %}
+  <div class="count">{{ total }} host{% if total != 1 %}s{% endif %} matched.</div>
+  {% endif %}
+  {% for h in results %}
+  <div class="host">
+    <div class="ip"><a href="/host/{{ h.ip }}">{{ h.ip }}</a></div>
+    <div class="meta">
+      {% if let Some(name) = h.hostname %}{{ name }} · {% endif %}
+      {% if let Some(c) = h.country %}{{ c }} · {% endif %}
+      {% if let Some(asn) = h.asn %}AS{{ asn }}{% if let Some(org) = h.org %} {{ org }}{% endif %} · {% endif %}
+      seen {{ h.last_seen }}
+    </div>
+    {% if !h.ports.is_empty() %}
+    <div class="badges">
+      {% for p in h.ports %}<span class="badge port">{{ p }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    {% if !h.products.is_empty() %}
+    <div class="badges">
+      {% for pr in h.products %}<span class="badge product">{{ pr }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    {% if h.has_jarm || h.favicon_hash.is_some() || !h.technologies.is_empty() %}
+    <div class="badges">
+      {% if h.has_jarm %}<span class="chip">JARM</span>{% endif %}
+      {% if let Some(fh) = h.favicon_hash %}{% if let Some(url) = h.favicon_url %}<a class="chip" href="{{ url }}">favicon:{{ fh }}</a>{% else %}<span class="chip">favicon:{{ fh }}</span>{% endif %}{% endif %}
+      {% for tech in h.technologies %}<span class="chip">{{ tech }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    {% if !h.tags.is_empty() %}
+    <div class="badges">
+      {% for t in h.tags %}{% if let Some(url) = t.cve_url %}<a class="chip{% if t.highlight %} vuln{% endif %}" href="{{ url }}">{{ t.name }}{% if let Some(cve) = t.cve %} {{ cve }}{% endif %}</a>{% else %}<span class="chip{% if t.highlight %} vuln{% endif %}">{{ t.name }}{% if let Some(cve) = t.cve %} {{ cve }}{% endif %}</span>{% endif %}{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {% if error.is_none() && results.is_empty() %}
+  <div class="hint">No hosts matched this query.</div>
+  {% endif %}
+
+  {% if has_prev || has_next %}
+  <div class="pager">
+    {% if has_prev %}<a href="{{ prev_url }}">&larr; Prev</a>{% else %}<span class="disabled">&larr; Prev</span>{% endif %}
+    <span>Page {{ page + 1 }}</span>
+    {% if has_next %}<a href="{{ next_url }}">Next &rarr;</a>{% else %}<span class="disabled">Next &rarr;</span>{% endif %}
+  </div>
+  {% endif %}
+{% else %}
+  <div class="hint">Enter a query above to search collected hosts, or browse the <a href="/stats">dataset stats</a>.</div>
+{% endif %}
+{% endblock %}

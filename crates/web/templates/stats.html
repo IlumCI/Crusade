@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Crusade — Stats{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+{% endblock %}
+{% block content %}
+<h1 style="margin:0 0 0.25rem">{% if scoped %}Stats for this search{% else %}Dataset stats{% endif %}</h1>
+<form class="searchbar" method="get" action="/stats">
+  <input type="text" name="q" value="{{ q }}" placeholder="scope the stats to a search, e.g. port:443 country:DE">
+  <button type="submit">Scope</button>
+</form>
+{% if scoped %}
+<div class="count">{{ host_count }} host{% if host_count != 1 %}s{% endif %} match <code>{{ q }}</code>. · <a href="/stats">whole dataset</a></div>
+{% else %}
+<div class="count">{{ host_count }} host{% if host_count != 1 %}s{% endif %} in the index.</div>
+{% endif %}
+<div class="hint">Facet links search with the new v2 filters too: jarm:, http.favicon.hash:, ssh.hostkey:, hassh:, vuln:, net:, transport:, city:.</div>
+
+<h2 class="section-title">Host map</h2>
+<div id="map"></div>
+<div class="map-fallback" id="map-fallback" style="display:none">Map library unavailable (offline?). Coordinates are still served at <a href="/api/map">/api/map</a>.</div>
+
+<h2 class="section-title">Top ports</h2>
+<table class="facet">
+  <tr><th style="width:120px">Port</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in ports %}
+  <tr><td><a href="/?q=port:{{ f.value }}">{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / ports_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+
+<h2 class="section-title">Top products</h2>
+<table class="facet">
+  <tr><th style="width:220px">Product</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in products %}
+  <tr><td><a href="/?q=product:{{ f.value }}">{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / products_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+
+<h2 class="section-title">Top countries</h2>
+<table class="facet">
+  <tr><th style="width:120px">Country</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in countries %}
+  <tr><td><a href="/?q=country:{{ f.value }}">{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / countries_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+
+<h2 class="section-title">Top ASNs</h2>
+<table class="facet">
+  <tr><th style="width:120px">ASN</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in asns %}
+  <tr><td><a href="/?q=asn:{{ f.value }}">AS{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / asns_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+
+<h2 class="section-title">Top tags</h2>
+<table class="facet">
+  <tr><th style="width:220px">Tag</th><th style="width:90px">Hosts</th><th>&nbsp;</th></tr>
+  {% for f in tags %}
+  <tr><td><a href="/?q=tag:{{ f.value }}">{{ f.value }}</a></td><td>{{ f.count }}</td>
+    <td><div class="bar-wrap"><div class="bar" style="width:{{ f.count * 100 / tags_max }}%"></div></div></td></tr>
+  {% endfor %}
+</table>
+
+<script>
+(function () {
+  if (typeof L === "undefined") {
+    document.getElementById("map").style.display = "none";
+    document.getElementById("map-fallback").style.display = "block";
+    return;
+  }
+  var map = L.map("map", { worldCopyJump: true }).setView([20, 0], 2);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+  fetch("/api/map")
+    .then(function (r) { return r.json(); })
+    .then(function (points) {
+      points.forEach(function (p) {
+        if (typeof p.lat !== "number" || typeof p.lon !== "number") return;
+        L.circleMarker([p.lat, p.lon], { radius: 5, color: "#5ac8fa", weight: 1, fillOpacity: 0.6 })
+          .bindPopup('<a href="/host/' + encodeURIComponent(p.ip) + '">' + p.ip + "</a>" + (p.country ? " (" + p.country + ")" : ""))
+          .addTo(map);
+      });
+    })
+    .catch(function () {
+      document.getElementById("map-fallback").style.display = "block";
+    });
+})();
+</script>
+{% endblock %}

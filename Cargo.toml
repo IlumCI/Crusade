@@ -1,0 +1,78 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/store",
+    "crates/scan",
+    "crates/probe",
+    "crates/enrich",
+    "crates/vuln",
+    "crates/web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Euroswarms Research <research@euroswarms.eu>"]
+
+[workspace.dependencies]
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+ipnet = { version = "2", features = ["serde"] }
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+flate2 = "1"
+futures = "0.3"
+
+crusade-core = { path = "crates/core" }
+crusade-store = { path = "crates/store" }
+crusade-scan = { path = "crates/scan" }
+crusade-probe = { path = "crates/probe" }
+crusade-enrich = { path = "crates/enrich" }
+crusade-vuln = { path = "crates/vuln" }
+crusade-web = { path = "crates/web" }
+
+[package]
+name = "crusade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "crusade"
+path = "src/main.rs"
+
+[dependencies]
+crusade-core.workspace = true
+crusade-store.workspace = true
+crusade-scan.workspace = true
+crusade-probe.workspace = true
+crusade-enrich.workspace = true
+crusade-vuln.workspace = true
+crusade-web.workspace = true
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+ipnet.workspace = true
+toml.workspace = true
+reqwest.workspace = true
+flate2.workspace = true
+futures.workspace = true
+
+[profile.release]
+lto = "thin"

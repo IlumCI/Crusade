@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Crusade — {{ ip }}{% endblock %}
+{% block content %}
+<p><a href="/">&larr; Back to search</a></p>
+<h1 style="margin:0 0 0.5rem">{{ ip }}</h1>
+
+<div class="info-grid">
+  {% if !hostnames.is_empty() %}<div class="k">Hostnames</div><div>{{ hostnames|join(", ") }}</div>{% endif %}
+  {% if !domains.is_empty() %}<div class="k">Domains</div><div>{{ domains|join(", ") }}</div>{% endif %}
+  {% if let Some(c) = country %}<div class="k">Country</div><div>{{ c }}{% if let Some(city) = city %} ({{ city }}){% endif %}</div>{% endif %}
+  {% if let Some(asn) = asn %}<div class="k">ASN</div><div>AS{{ asn }}{% if let Some(org) = org %} — {{ org }}{% endif %}</div>{% endif %}
+  {% if let Some(lat) = latitude %}{% if let Some(lon) = longitude %}<div class="k">Location</div><div>{{ lat }}, {{ lon }}</div>{% endif %}{% endif %}
+  <div class="k">Last seen</div><div>{{ last_seen }}</div>
+</div>
+
+{% if !tags.is_empty() %}
+<h2 class="section-title">Tags</h2>
+<div class="badges">
+  {% for t in tags %}{% if let Some(url) = t.cve_url %}<a class="chip{% if t.highlight %} vuln{% endif %}" href="{{ url }}">{{ t.name }}{% if let Some(cve) = t.cve %} {{ cve }}{% endif %}{% if let Some(d) = t.detail %} — {{ d }}{% endif %}</a>{% else %}<span class="chip{% if t.highlight %} vuln{% endif %}">{{ t.name }}{% if let Some(cve) = t.cve %} {{ cve }}{% endif %}{% if let Some(d) = t.detail %} — {{ d }}{% endif %}</span>{% endif %}{% endfor %}
+</div>
+{% endif %}
+
+<h2 class="section-title">Services ({{ services.len() }})</h2>
+{% for s in services %}
+<div class="svc">
+  <h3>{{ s.port }}/{{ s.transport }}{% if let Some(svc) = s.service %} · {{ svc }}{% endif %}</h3>
+  <div class="kv">
+    {% if let Some(p) = s.product %}<b>{{ p }}</b>{% if let Some(v) = s.version %} {{ v }}{% endif %} · {% endif %}
+    {% if let Some(cpe) = s.cpe %}{{ cpe }} · {% endif %}
+    observed {{ s.observed_at }}
+  </div>
+
+  {% if let Some(jarm) = s.jarm %}
+  <div class="kv" style="margin-top:0.4rem">
+    JARM {% if let Some(url) = s.jarm_url %}· <a href="{{ url }}"><code>{{ jarm }}</code></a>{% else %}· <code>{{ jarm }}</code>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if let Some(http) = s.http %}
+  <div class="kv" style="margin-top:0.4rem">
+    HTTP
+    {% if let Some(st) = http.status %}<b>{{ st }}</b>{% endif %}
+    {% if let Some(server) = http.server %}· server: {{ server }}{% endif %}
+    {% if let Some(title) = http.title %}· title: {{ title }}{% endif %}
+    {% if let Some(fh) = s.favicon_hash %}· favicon: {% if let Some(url) = s.favicon_url %}<a href="{{ url }}"><code>{{ fh }}</code></a>{% else %}<code>{{ fh }}</code>{% endif %}{% endif %}
+    {% if !http.technologies.is_empty() %}
+    <div class="badges" style="margin-top:0.35rem">
+      {% for tech in http.technologies %}<span class="badge product">{{ tech }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    {% if !http.security_headers.is_empty() %}
+    <div class="badges" style="margin-top:0.35rem">
+      {% for h in http.security_headers %}<span class="chip">{{ h }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if let Some(tls) = s.tls %}
+  <div class="kv" style="margin-top:0.4rem">
+    TLS
+    {% if let Some(ver) = tls.version %}<b>{{ ver }}</b>{% endif %}
+    {% if let Some(cipher) = tls.cipher %}· {{ cipher }}{% endif %}
+    {% if let Some(cn) = tls.subject_cn %}· CN={{ cn }}{% endif %}
+    {% if let Some(issuer) = tls.issuer_cn %}· issuer={{ issuer }}{% endif %}
+    {% if tls.self_signed %}· <span class="chip vuln">self-signed</span>{% endif %}
+    {% if !tls.san.is_empty() %}<br>SAN: {{ tls.san|join(", ") }}{% endif %}
+    {% if let Some(fp) = tls.fingerprint_sha256 %}<br>SHA-256: {{ fp }}{% endif %}
+  </div>
+  {% endif %}
+
+  {% if let Some(ssh) = s.ssh %}
+  <div class="kv" style="margin-top:0.4rem">
+    SSH
+    {% if let Some(b) = ssh.banner %}· <b>{{ b }}</b>{% endif %}
+    {% if let Some(kt) = ssh.host_key_type %}<br>host key type: {{ kt }}{% endif %}
+    {% if let Some(hk) = ssh.host_key_sha256 %}<br>host key: {% if let Some(url) = ssh.host_key_url %}<a href="{{ url }}"><code>{{ hk }}</code></a>{% else %}<code>{{ hk }}</code>{% endif %}{% endif %}
+    {% if let Some(hassh) = ssh.hassh %}<br>HASSH: {% if let Some(url) = ssh.hassh_url %}<a href="{{ url }}"><code>{{ hassh }}</code></a>{% else %}<code>{{ hassh }}</code>{% endif %}{% endif %}
+    {% if !ssh.kex_algorithms.is_empty() %}
+    <div class="badges" style="margin-top:0.35rem">
+      {% for k in ssh.kex_algorithms %}<span class="chip">{{ k }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if let Some(banner) = s.banner %}
+  <pre class="banner">{{ banner }}</pre>
+  {% endif %}
+</div>
+{% endfor %}
+{% if services.is_empty() %}
+<div class="hint">No services recorded for this host.</div>
+{% endif %}
+{% endblock %}

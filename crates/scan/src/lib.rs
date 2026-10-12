@@ -1,0 +1,53 @@
+//! Crusade scan: the TCP connect scanner and its responsible-use guardrails.
+//!
+//! This crate performs the actual network reach-out for Crusade. Its design is
+//! deliberately conservative, because a scanner is only a legitimate
+//! security-research tool when it refuses to misbehave:
+//!
+//!   * **Connect-and-read only.** We open ordinary TCP connections with
+//!     [`tokio::net::TcpStream`] and note whether the handshake completes. There
+//!     is no raw-socket SYN flooding, no spoofing, no exploitation — banner and
+//!     protocol probing lives in the sibling `probe` crate and also only reads.
+//!   * **The blocklist is mandatory.** Every address, whether it arrives through
+//!     [`expand_targets`] or is handed straight to [`TcpScanner::scan`], is
+//!     checked against a [`Blocklist`] that *always* contains the reserved,
+//!     private, loopback, link-local, CGNAT, multicast, broadcast and
+//!     documentation ranges for both IPv4 and IPv6. A blocked address is never
+//!     connected to. Operators add their own ranges on top; those are blocked
+//!     unconditionally and can never be lifted.
+//!   * **Conservative rates.** A token-bucket [`RateLimiter`] caps new
+//!     connections per second and a semaphore bounds in-flight connections, so
+//!     the default behaviour is gentle on both the network and the targets.
+//!
+//! Large internet-wide sweeps are expected to be run out-of-band with a
+//! sanctioned `masscan`/`zmap` deployment; this crate ingests their output via
+//! [`parse_masscan_json`] / [`parse_zmap_csv`] and re-applies the blocklist with
+//! [`filter_blocked`] before anything downstream touches the results. For bulk
+//! SYN discovery the [`masscan_discover`] front-end shells out to the system
+//! `masscan` — and it, too, honours the mandatory blocklist, both by refusing to
+//! hand it any blocked target and by handing masscan an `--excludefile` built
+//! from the full blocklist so the external tool refuses those ranges itself.
+//!
+//! Targeted scanning covers both IPv4 and IPv6: [`expand_targets`] accepts a
+//! bare IPv6 address and small IPv6 CIDRs, but refuses an IPv6 range wider than
+//! a safety cap, since such ranges are astronomically large. UDP recon is kept
+//! to plumbing here — [`default_udp_ports`] and [`udp_worklist`] produce a
+//! blocklist-clean `(ip, port)` worklist for the `probe` crate's UDP probes to
+//! consume; the mandatory blocklist governs that worklist exactly as it does TCP
+//! (no UDP sockets are opened in this crate).
+
+mod blocklist;
+mod discovery;
+mod rate;
+mod scanner;
+mod sweep;
+mod targets;
+mod udp;
+
+pub use blocklist::Blocklist;
+pub use discovery::{masscan_discover, MasscanConfig};
+pub use rate::{RateLimiter, RateLimiterParams};
+pub use scanner::{ScanConfig, TcpScanner};
+pub use sweep::{filter_blocked, parse_masscan_json, parse_zmap_csv};
+pub use targets::{expand_targets, MIN_V6_PREFIX};
+pub use udp::{default_udp_ports, udp_worklist};

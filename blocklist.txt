@@ -1,0 +1,3 @@
+# One IP or CIDR per line. These ranges are ALWAYS skipped, in addition to the
+# hard-coded private/reserved ranges enforced in code. Add networks that ask to
+# be excluded from scanning here.

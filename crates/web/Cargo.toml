@@ -1,0 +1,22 @@
+[package]
+name = "crusade-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crusade-core.workspace = true
+crusade-store.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+time.workspace = true
+axum = "0.7"
+askama = "0.12"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

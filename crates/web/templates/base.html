@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Crusade{% endblock %}</title>
+{% block head %}{% endblock %}
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2430;
+    --border: #2b3340;
+    --fg: #d6deeb;
+    --muted: #7d8aa0;
+    --accent: #5ac8fa;
+    --accent-dim: #2b6c7a;
+    --danger: #ff6b6b;
+    --danger-bg: #3a1618;
+    --ok: #7ee787;
+    --chip: #22303f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header.topbar {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 0.75rem 1.25rem;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header.topbar .brand {
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    font-size: 1.1rem;
+  }
+  header.topbar nav { display: flex; gap: 1rem; }
+  main { max-width: 1040px; margin: 0 auto; padding: 1.25rem; }
+  .searchbar { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+  .searchbar input[type=text] {
+    flex: 1;
+    padding: 0.6rem 0.75rem;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 14px;
+  }
+  .searchbar input[type=text]:focus { outline: none; border-color: var(--accent-dim); }
+  .searchbar button {
+    padding: 0.6rem 1.1rem;
+    background: var(--accent-dim);
+    color: #eaf6ff;
+    border: 1px solid var(--accent-dim);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 600;
+  }
+  .searchbar button:hover { background: var(--accent); color: #042330; }
+  .hint { color: var(--muted); font-size: 12px; margin-bottom: 1rem; }
+  .error {
+    background: var(--danger-bg);
+    border: 1px solid var(--danger);
+    color: #ffd3d3;
+    padding: 0.6rem 0.8rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+  }
+  .count { color: var(--muted); margin-bottom: 0.75rem; }
+  .host {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+  }
+  .host .ip { font-size: 1.05rem; font-weight: 700; }
+  .host .meta { color: var(--muted); font-size: 12px; margin-top: 0.15rem; }
+  .badges { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.55rem; }
+  .badge {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 4px;
+    font-size: 12px;
+    background: var(--chip);
+    border: 1px solid var(--border);
+  }
+  .badge.port { color: var(--accent); }
+  .badge.product { color: #d2a8ff; }
+  .chip {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 11px;
+    background: var(--chip);
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .chip.vuln {
+    background: var(--danger-bg);
+    border-color: var(--danger);
+    color: #ffd3d3;
+    font-weight: 700;
+  }
+  .pager { display: flex; gap: 0.75rem; margin-top: 1rem; align-items: center; }
+  .pager a, .pager span {
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+  }
+  .pager span.disabled { color: var(--muted); opacity: 0.5; }
+  pre.banner {
+    background: #0a0e14;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #c7d0dd;
+    font-size: 12.5px;
+    margin: 0.4rem 0 0 0;
+  }
+  table.facet { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+  table.facet th { text-align: left; color: var(--muted); font-weight: 600; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--border); }
+  table.facet td { padding: 0.3rem 0.4rem; vertical-align: middle; }
+  .bar-wrap { background: var(--panel-2); border-radius: 4px; height: 14px; width: 100%; overflow: hidden; }
+  .bar { background: var(--accent-dim); height: 100%; }
+  .svc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+  }
+  .svc h3 { margin: 0 0 0.35rem 0; font-size: 1rem; }
+  .svc .kv { color: var(--muted); font-size: 12px; }
+  .svc .kv b { color: var(--fg); font-weight: 600; }
+  .section-title { margin: 1.5rem 0 0.6rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  .info-grid { display: grid; grid-template-columns: 140px 1fr; gap: 0.25rem 1rem; }
+  .info-grid .k { color: var(--muted); }
+  #map { height: 420px; border: 1px solid var(--border); border-radius: 8px; margin-top: 0.5rem; background: var(--panel-2); }
+  .map-fallback { color: var(--muted); font-size: 12px; margin-top: 0.4rem; }
+  footer { max-width: 1040px; margin: 2rem auto 1rem; padding: 0 1.25rem; color: var(--muted); font-size: 12px; }
+  @media (max-width: 640px) {
+    main { padding: 1rem; }
+    .info-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">CRUSADE</span>
+  <nav>
+    <a href="/">Search</a>
+    <a href="/stats">Stats</a>
+  </nav>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>Crusade — self-hosted service search over already-collected data. Read-only.</footer>
+</body>
+</html>

@@ -1,0 +1,292 @@
+//! Askama template structs and the view models that feed them.
+//!
+//! Each page has a `*Template` struct deriving [`askama::Template`]; the
+//! smaller view types (`HostRow`, `ServiceView`, `TagView`) are plain data
+//! shaped so the HTML templates stay logic-light.
+
+use askama::Template;
+use crusade_core::model::{Host, HttpInfo, Service, SshInfo, Tag, TlsCert};
+use crusade_store::Facet;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+
+/// Format a timestamp for display, falling back to a raw debug string.
+fn fmt_time(dt: OffsetDateTime) -> String {
+    dt.format(&Rfc3339).unwrap_or_else(|_| dt.to_string())
+}
+
+/// Percent-encode a query-string component (same rules as the pager links in
+/// `handlers`), used to build safe `/?q=...` pivot URLs from raw fingerprint
+/// values that may contain `:`, `+`, `/` or `=`.
+fn encode_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Build a `/?q=<field>:<value>` pivot search URL with the value encoded.
+fn pivot(field: &str, value: &str) -> String {
+    format!("/?q={}", encode_component(&format!("{field}:{value}")))
+}
+
+/// Does a tag describe a vulnerability / known-exploited issue worth flagging?
+fn tag_is_vuln(tag: &Tag) -> bool {
+    if tag.cve.is_some() {
+        return true;
+    }
+    let n = tag.name.to_ascii_lowercase();
+    ["vuln", "cve", "kev", "exploit", "known-exploited", "insecure", "cwe"]
+        .iter()
+        .any(|needle| n.contains(needle))
+}
+
+/// A tag as rendered: the raw name plus whether it should be highlighted and,
+/// for CVE-bearing tags, a pivot URL to every host carrying the same CVE.
+pub struct TagView {
+    pub name: String,
+    pub cve: Option<String>,
+    /// `/?q=vuln:<cve>` when the tag records a specific CVE.
+    pub cve_url: Option<String>,
+    pub detail: Option<String>,
+    pub highlight: bool,
+}
+
+impl From<&Tag> for TagView {
+    fn from(t: &Tag) -> Self {
+        TagView {
+            name: t.name.clone(),
+            cve: t.cve.clone(),
+            cve_url: t.cve.as_deref().map(|c| pivot("vuln", c)),
+            detail: t.detail.clone(),
+            highlight: tag_is_vuln(t),
+        }
+    }
+}
+
+/// One host as shown in a search-results row.
+pub struct HostRow {
+    pub ip: String,
+    pub hostname: Option<String>,
+    pub country: Option<String>,
+    pub asn: Option<u32>,
+    pub org: Option<String>,
+    pub ports: Vec<u16>,
+    pub products: Vec<String>,
+    pub tags: Vec<TagView>,
+    pub last_seen: String,
+    /// True if any service carries a JARM fingerprint (hint badge).
+    pub has_jarm: bool,
+    /// First favicon hash seen across services, for a clickable hint badge.
+    pub favicon_hash: Option<i32>,
+    /// `/?q=http.favicon.hash:<hash>` pivot for the favicon badge.
+    pub favicon_url: Option<String>,
+    /// Detected technologies across all services (deduped), for hint chips.
+    pub technologies: Vec<String>,
+}
+
+impl From<&Host> for HostRow {
+    fn from(h: &Host) -> Self {
+        let mut ports: Vec<u16> = h.services.iter().map(|s| s.port).collect();
+        ports.sort_unstable();
+        ports.dedup();
+
+        let has_jarm = h.services.iter().any(|s| s.jarm.is_some());
+        let favicon_hash = h
+            .services
+            .iter()
+            .find_map(|s| s.http.as_ref().and_then(|x| x.favicon_hash));
+        let mut technologies: Vec<String> = h
+            .services
+            .iter()
+            .filter_map(|s| s.http.as_ref())
+            .flat_map(|x| x.technologies.iter().cloned())
+            .collect();
+        technologies.sort_unstable();
+        technologies.dedup();
+
+        HostRow {
+            ip: h.ip.to_string(),
+            hostname: h.hostnames.first().cloned(),
+            country: h.country.clone(),
+            asn: h.asn,
+            org: h.org.clone(),
+            ports,
+            products: h.products().into_iter().map(|p| p.to_string()).collect(),
+            tags: h.tags.iter().map(TagView::from).collect(),
+            last_seen: fmt_time(h.last_seen),
+            has_jarm,
+            favicon_hash,
+            favicon_url: favicon_hash.map(|v| pivot("http.favicon.hash", &v.to_string())),
+            technologies,
+        }
+    }
+}
+
+/// SSH metadata as shown on the host-detail page, with pivot URLs precomputed.
+pub struct SshView {
+    pub banner: Option<String>,
+    pub host_key_type: Option<String>,
+    pub host_key_sha256: Option<String>,
+    /// `/?q=ssh.hostkey:<sha256>` pivot.
+    pub host_key_url: Option<String>,
+    pub kex_algorithms: Vec<String>,
+    pub hassh: Option<String>,
+    /// `/?q=hassh:<hassh>` pivot.
+    pub hassh_url: Option<String>,
+}
+
+impl From<&SshInfo> for SshView {
+    fn from(s: &SshInfo) -> Self {
+        SshView {
+            banner: s.banner.clone(),
+            host_key_type: s.host_key_type.clone(),
+            host_key_sha256: s.host_key_sha256.clone(),
+            host_key_url: s.host_key_sha256.as_deref().map(|k| pivot("ssh.hostkey", k)),
+            kex_algorithms: s.kex_algorithms.clone(),
+            hassh: s.hassh.clone(),
+            hassh_url: s.hassh.as_deref().map(|h| pivot("hassh", h)),
+        }
+    }
+}
+
+/// One service as shown on the host-detail page.
+pub struct ServiceView {
+    pub port: u16,
+    pub transport: String,
+    pub service: Option<String>,
+    pub product: Option<String>,
+    pub version: Option<String>,
+    pub cpe: Option<String>,
+    pub banner: Option<String>,
+    pub tls: Option<TlsCert>,
+    pub http: Option<HttpInfo>,
+    pub ssh: Option<SshView>,
+    /// JARM fingerprint and its `/?q=jarm:<value>` pivot.
+    pub jarm: Option<String>,
+    pub jarm_url: Option<String>,
+    /// Favicon hash (from `http`) hoisted up with a pivot URL for the template.
+    pub favicon_hash: Option<i32>,
+    pub favicon_url: Option<String>,
+    pub observed_at: String,
+}
+
+impl From<&Service> for ServiceView {
+    fn from(s: &Service) -> Self {
+        let transport = serde_json::to_value(s.transport)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "tcp".to_string());
+        let favicon_hash = s.http.as_ref().and_then(|h| h.favicon_hash);
+        ServiceView {
+            port: s.port,
+            transport,
+            service: s.service.clone(),
+            product: s.product.clone(),
+            version: s.version.clone(),
+            cpe: s.cpe.clone(),
+            banner: s.banner.clone(),
+            tls: s.tls.clone(),
+            http: s.http.clone(),
+            ssh: s.ssh.as_ref().map(SshView::from),
+            jarm: s.jarm.clone(),
+            jarm_url: s.jarm.as_deref().map(|j| pivot("jarm", j)),
+            favicon_hash,
+            favicon_url: favicon_hash.map(|v| pivot("http.favicon.hash", &v.to_string())),
+            observed_at: fmt_time(s.observed_at),
+        }
+    }
+}
+
+/// The search / landing page.
+#[derive(Template)]
+#[template(path = "index.html")]
+pub struct IndexTemplate {
+    pub q: String,
+    pub error: Option<String>,
+    pub searched: bool,
+    pub total: i64,
+    pub page: usize,
+    pub results: Vec<HostRow>,
+    pub has_prev: bool,
+    pub has_next: bool,
+    pub prev_url: String,
+    pub next_url: String,
+}
+
+/// The host-detail page.
+#[derive(Template)]
+#[template(path = "host.html")]
+pub struct HostTemplate {
+    pub ip: String,
+    pub hostnames: Vec<String>,
+    pub domains: Vec<String>,
+    pub country: Option<String>,
+    pub city: Option<String>,
+    pub asn: Option<u32>,
+    pub org: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub last_seen: String,
+    pub tags: Vec<TagView>,
+    pub services: Vec<ServiceView>,
+}
+
+impl From<&Host> for HostTemplate {
+    fn from(h: &Host) -> Self {
+        HostTemplate {
+            ip: h.ip.to_string(),
+            hostnames: h.hostnames.clone(),
+            domains: h.domains.clone(),
+            country: h.country.clone(),
+            city: h.city.clone(),
+            asn: h.asn,
+            org: h.org.clone(),
+            latitude: h.latitude,
+            longitude: h.longitude,
+            last_seen: fmt_time(h.last_seen),
+            tags: h.tags.iter().map(TagView::from).collect(),
+            services: h.services.iter().map(ServiceView::from).collect(),
+        }
+    }
+}
+
+/// The stats / facets page.
+#[derive(Template)]
+#[template(path = "stats.html")]
+pub struct StatsTemplate {
+    /// Hosts in scope: the whole index, or the matches when `scoped`.
+    pub host_count: i64,
+    /// The raw `?q=` echoed back (empty when unscoped).
+    pub q: String,
+    /// True when the facets are restricted to a search (`facets_for_query`).
+    pub scoped: bool,
+    pub ports: Vec<Facet>,
+    pub ports_max: i64,
+    pub products: Vec<Facet>,
+    pub products_max: i64,
+    pub countries: Vec<Facet>,
+    pub countries_max: i64,
+    pub asns: Vec<Facet>,
+    pub asns_max: i64,
+    pub tags: Vec<Facet>,
+    pub tags_max: i64,
+}
+
+/// The 404 page.
+#[derive(Template)]
+#[template(path = "not_found.html")]
+pub struct NotFoundTemplate {
+    pub message: String,
+}
+
+/// Largest count in a facet list, floored at 1 so bar math never divides by 0.
+pub fn facet_max(facets: &[Facet]) -> i64 {
+    facets.iter().map(|f| f.count).max().unwrap_or(1).max(1)
+}
