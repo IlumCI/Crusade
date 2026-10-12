@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crusade — a local, keyless service search engine</title>
+<meta name="description" content="Self-hosted, no-API-key Shodan-style service search engine. Scans, fingerprints, enriches, tags vulns & exploits, classifies auth posture.">
+<style>
+  :root{--bg:#0b0e14;--fg:#d7dce5;--mut:#8b93a7;--acc:#6ea8fe;--warn:#ffb454;--ok:#7ee787;--card:#121722;--line:#222a39;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:0 16px}
+  header{padding:72px 0 40px;border-bottom:1px solid var(--line)}
+  h1{font-size:clamp(2.2rem,6vw,3.4rem);margin:0 0 .3em;letter-spacing:-.02em}
+  h1 .c{color:var(--acc)}
+  .tag{color:var(--mut);font-size:1.15rem;max-width:40em}
+  code,pre{font-family:var(--mono)}
+  pre{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;overflow:auto;font-size:.9rem}
+  code{background:#1a2130;padding:.12em .4em;border-radius:5px;font-size:.88em}
+  pre code{background:none;padding:0}
+  h2{margin-top:2.4em;font-size:1.5rem}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:1.2em 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .card h3{margin:.1em 0 .4em;font-size:1.05rem}
+  .card p{margin:0;color:var(--mut);font-size:.92rem}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:.6em 0}
+  .chip{background:#1a2130;border:1px solid var(--line);border-radius:999px;padding:.15em .7em;font-family:var(--mono);font-size:.8rem;color:var(--acc)}
+  .note{background:#1c1710;border:1px solid #3a2e17;border-radius:10px;padding:14px 16px;color:#e6c392;font-size:.92rem}
+  a{color:var(--acc)}
+  footer{margin:3em 0 4em;color:var(--mut);font-size:.85rem;border-top:1px solid var(--line);padding-top:1.5em}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1><span class="c">Crusade</span></h1>
+  <p class="tag">A self-hosted, no-API-key service search engine in the spirit of Shodan — scan reachable services, fingerprint them, enrich with geo/ASN/DNS/TLS, tag known vulns &amp; public exploits, classify authentication posture, and search it all. For authorized security research.</p>
+  <div class="chips">
+    <span class="chip">Rust</span><span class="chip">SQLite + FTS5</span><span class="chip">connect-and-read only</span><span class="chip">no API keys</span>
+  </div>
+</div></header>
+
+<main class="wrap">
+  <div class="note"><b>This page is a static overview.</b> Crusade is a live server + scanner — it runs as a CLI / web app on your own machine or a VPS (or the published container image), not on GitHub Pages. Pages can only host static files; it cannot run the scanner, the database, or the web UI.</div>
+
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card"><h3>Discover &amp; fingerprint</h3><p>TCP/UDP scanning with a mandatory blocklist, nmap-service-probes fingerprinting, TLS certs, JARM, favicon mmh3, SSH intel, and ICS/OT device identification.</p></div>
+    <div class="card"><h3>Enrich</h3><p>GeoIP/ASN, reverse DNS, certificate-transparency subdomains, and optional web-UI screenshots.</p></div>
+    <div class="card"><h3>Vulns &amp; exploits</h3><p>CVE matching (NVD + CISA KEV) cross-referenced to public exploits (Exploit-DB / Metasploit), plus heuristic tags.</p></div>
+    <div class="card"><h3>Auth posture</h3><p>Flags services reachable <em>without credentials</em> — open databases, ICS, VNC, admin panels — observed, never brute-forced.</p></div>
+    <div class="card"><h3>Search</h3><p>A Shodan-style query language over a local SQLite+FTS5 index, with facets, history, trends, a web UI and a JSON API.</p></div>
+    <div class="card"><h3>Operate</h3><p>Continuous rescans with webhook/email alerts, JSON-Lines export, and a distributed scan-worker queue.</p></div>
+  </div>
+
+  <h2>Run it</h2>
+  <pre><code># Container (published on each release)
+docker run -p 127.0.0.1:8088:8088 ghcr.io/ilumci/crusade serve --bind 0.0.0.0:8088
+
+# From source
+cargo build --release
+./target/release/crusade update-data
+./target/release/crusade scan 203.0.113.0/24
+./target/release/crusade search 'product:nginx country:DE has_exploit:true'
+./target/release/crusade serve        # web UI at http://127.0.0.1:8088</code></pre>
+
+  <h2>Query language</h2>
+  <div class="chips">
+    <span class="chip">port:</span><span class="chip">net:</span><span class="chip">country:</span><span class="chip">asn:</span><span class="chip">product:</span><span class="chip">version:</span><span class="chip">ssl.cn:</span><span class="chip">jarm:</span><span class="chip">http.favicon.hash:</span><span class="chip">ssh.hostkey:</span><span class="chip">hassh:</span><span class="chip">ics:</span><span class="chip">auth:</span><span class="chip">vuln:</span><span class="chip">has_exploit:</span><span class="chip">tag:</span>
+  </div>
+  <pre><code>auth:open ics:modbus                  # unauthenticated industrial devices
+has_exploit:true country:DE           # exploitable CVEs in Germany
+product:nginx -has_vuln:true          # nginx without a known CVE
+http.favicon.hash:-247388890          # same deployment, anywhere</code></pre>
+
+  <h2>Responsible use</h2>
+  <p class="tag">Scan only what you own or are explicitly authorized to. Crusade connects and reads — it never exploits, brute-forces, or submits credentials — and a mandatory, un-bypassable blocklist skips private/reserved ranges. Internet-wide sweeps require a sanctioned scanning host and are your responsibility.</p>
+
+  <footer>
+    MIT licensed · <a href="https://github.com/IlumCI/Crusade">source on GitHub</a> · built for authorized security research and education.
+  </footer>
+</main>
+</body>
+</html>

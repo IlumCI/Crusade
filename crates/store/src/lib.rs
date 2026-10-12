@@ -76,6 +76,10 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        // Tolerate concurrent writers (multiple workers + web + monitor on the
+        // same WAL database) instead of failing immediately on a locked DB.
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(include_str!("schema.sql"))
             .context("applying schema")?;
         Ok(Store { conn })
