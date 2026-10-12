@@ -84,38 +84,41 @@ fn is_tls_port(port: u16) -> bool {
 pub async fn probe_service(ip: IpAddr, port: u16, fp: &Fingerprints, cfg: &ProbeConfig) -> Service {
     let mut svc = Service::new(port, Transport::Tcp);
 
-    // 1. Banner / HTTP response over plaintext.
-    if let Some(raw) = grab::grab_banner(ip, port, cfg.timeout).await {
+    // 1. Protocol-agnostic first exchange: server-first banner, else a benign
+    //    GET on the same connection (LZR-style; see `grab::grab_adaptive`).
+    let first = grab::grab_adaptive(ip, port, cfg.timeout).await;
+    if let Some(raw) = &first.raw {
         // Record a (lossy, trimmed) textual banner.
-        let banner = String::from_utf8_lossy(&raw);
+        let banner = String::from_utf8_lossy(raw);
         let trimmed = banner.trim_end_matches(['\r', '\n', '\0']).to_string();
         if !trimmed.is_empty() {
             svc.banner = Some(trimmed);
         }
 
         // HTTP metadata, if this looks like an HTTP response.
-        if let Some(http) = grab::parse_http(&raw) {
+        if let Some(http) = grab::parse_http(raw) {
             svc.http = Some(http);
         }
 
-        // Fingerprint: use the GetRequest ruleset for HTTP ports (where we
-        // sent a GET), otherwise the NULL/banner ruleset.
-        let kind = if grab::is_http_port(port) {
+        // Fingerprint with the GetRequest ruleset when the bytes answer our
+        // GET, otherwise the NULL/banner ruleset.
+        let kind = if first.sent_get {
             ProbeKind::GetRequest
         } else {
             ProbeKind::Null
         };
-        apply_match(&mut svc, fp.identify(port, kind, &raw));
+        apply_match(&mut svc, fp.identify(port, kind, raw));
 
         // If the GetRequest ruleset found nothing, fall back to NULL rules.
         if svc.service.is_none() && kind == ProbeKind::GetRequest {
-            apply_match(&mut svc, fp.identify(port, ProbeKind::Null, &raw));
+            apply_match(&mut svc, fp.identify(port, ProbeKind::Null, raw));
         }
     }
 
-    // 2. TLS certificate collection.
-    let tls_active = cfg.tls && is_tls_port(port);
-    if tls_active {
+    // 2. TLS certificate collection: on TLS ports, and on any port whose first
+    //    exchange hinted at TLS (TLS record, HTTPS-port complaint, silence).
+    let tls_attempt = cfg.tls && (is_tls_port(port) || first.tls_hint);
+    if tls_attempt {
         let sni = cfg.sni.as_deref();
         if let Some(cert) = tls::grab_cert(ip, port, sni, cfg.timeout).await {
             svc.tls = Some(cert);
@@ -124,8 +127,9 @@ pub async fn probe_service(ip: IpAddr, port: u16, fp: &Fingerprints, cfg: &Probe
             }
         }
     }
+    let tls_active = cfg.tls && (is_tls_port(port) || svc.tls.is_some());
 
-    // 3. JARM active TLS fingerprint (TLS ports only).
+    // 3. JARM active TLS fingerprint (ports that speak TLS).
     if tls_active {
         svc.jarm = jarm::jarm(ip, port, cfg.timeout).await;
     }

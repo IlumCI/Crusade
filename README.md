@@ -22,7 +22,10 @@ Built-in safeguards, on by default:
   and can never be bypassed from the CLI. Add further opt-out networks to
   `blocklist.txt` (or `crusade blocklist add <cidr>`).
 - **Connect-and-read only.** The only bytes Crusade sends are a benign HTTP
-  `GET` and a TLS handshake. No exploit payloads, no auth attempts.
+  `GET` and a TLS handshake. No exploit payloads, no auth attempts. Protocols
+  are identified on any port, not assumed from the port number: a silent
+  service gets the GET after a 2 s wait, and a TLS handshake follows when the
+  reply indicates TLS.
 - **Conservative rate limits.** Targeted scans are gently rate-limited.
   IPv4-wide sweep mode is **scaffolded but intentionally not run from a normal
   machine**: it requires a sanctioned scanning VPS, an explicit high rate set in
