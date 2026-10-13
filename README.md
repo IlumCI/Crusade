@@ -206,6 +206,38 @@ Published work here is industry rather than peer-reviewed, so this stays at
 the explainable baseline my survey recommended; anything learned belongs on
 top of it.
 
+## Honeypots that generate their banners
+
+The rule pack catches a honeypot that ships a default banner. It cannot catch
+one that writes a new banner for every visitor with a language model: the text
+is novel, plausible and inconsistent with nothing. What such a honeypot cannot
+hide is that it had to think first.
+
+Every first exchange is now timed twice: the TCP handshake, which is one round
+trip with no application in the path, and the gap from the established
+connection to the first byte of the answer. A static daemon writes a banner it
+already has, so the second is about the same as the first, every time.
+Inference takes hundreds of milliseconds at best and a different duration
+every time, because the duration follows how much text the model chose to
+produce.
+
+Both halves are needed, and both are normalised. A host in Australia answers
+slowly because it is far away; the *ratio* of answer time to round-trip time
+cancels the distance out, and an absolute floor stops a 30 ms reply on a 1 ms
+link — process startup, not a language model — from looking like a finding
+just because the ratio is large. Variance accumulates across rescans by
+Welford's method and is combined by Chan's parallel formula, so the statistics
+come out the same however the scans happened to be split, and five numbers per
+service is all that is ever stored. A tested invariant holds the two paths
+equal.
+
+Neither signal is weighted as heavily as a rule hit, because a real service
+under real load does look slow — so the evidence says what was measured
+("port 22: 900 ms to answer on an 11 ms round trip (82x)") and the judgement
+can be checked. Slow but *consistent* is load; slow and erratic is generation.
+See arXiv:2502.20589 and the LLM-honeypot work at arXiv:2309.00155,
+2409.08234, 2405.05999.
+
 ## Asking in English
 
 ```

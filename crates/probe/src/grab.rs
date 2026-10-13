@@ -66,6 +66,14 @@ pub struct Grab {
     /// The service appears to speak TLS (TLS record in reply, an HTTP server
     /// complaining about plaintext on a TLS port, or total silence).
     pub tls_hint: bool,
+    /// Milliseconds the TCP handshake took: one round trip, with no
+    /// application in the path.
+    pub connect_ms: u32,
+    /// Milliseconds from the established connection to the first byte of the
+    /// answer. `None` when nothing was said. Compared against `connect_ms`
+    /// this separates how far away a service is from how long it thought
+    /// (see `crusade_core::Latency`).
+    pub banner_ms: Option<u32>,
 }
 
 /// Protocol-agnostic first exchange (see module docs).
@@ -74,15 +82,30 @@ pub struct Grab {
 /// other port is given [`SERVER_FIRST_WAIT`] to send a banner; if it does not,
 /// the GET is sent on the same connection.
 pub async fn grab_adaptive(ip: IpAddr, port: u16, timeout: Duration) -> Grab {
+    let started = std::time::Instant::now();
     let connect = TcpStream::connect((ip, port));
     let Ok(Ok(mut stream)) = tokio::time::timeout(timeout, connect).await else {
         return Grab::default();
     };
+    // The handshake is the one exchange the application never sees, so its
+    // duration is the round trip to compare everything else against.
+    let connect_ms = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
     let get = format!("GET / HTTP/1.0\r\nHost: {ip}\r\n\r\n");
+
+    // Timed from the established connection, not from the start: the clock
+    // measures how long the service took to answer, not how long it took to
+    // reach.
+    let spoke = std::time::Instant::now();
+    let since = |t: &std::time::Instant| t.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
 
     if !is_http_port(port) {
         if let Some(raw) = read_capped(&mut stream, timeout.min(SERVER_FIRST_WAIT)).await {
-            return classify(raw, false);
+            let ms = since(&spoke);
+            return Grab {
+                connect_ms,
+                banner_ms: Some(ms),
+                ..classify(raw, false)
+            };
         }
     }
     if tokio::time::timeout(timeout, stream.write_all(get.as_bytes()))
@@ -92,15 +115,25 @@ pub async fn grab_adaptive(ip: IpAddr, port: u16, timeout: Duration) -> Grab {
         return Grab {
             sent_get: true,
             tls_hint: true,
+            connect_ms,
             ..Grab::default()
         };
     }
+    // The GET's own flight time is part of the wait, so the request is sent
+    // before the clock the answer is measured against.
+    let asked = std::time::Instant::now();
     match read_capped(&mut stream, timeout).await {
-        Some(raw) => classify(raw, true),
+        Some(raw) => Grab {
+            connect_ms,
+            banner_ms: Some(since(&asked)),
+            ..classify(raw, true)
+        },
         None => Grab {
             raw: None,
             sent_get: true,
             tls_hint: !is_http_port(port),
+            connect_ms,
+            banner_ms: None,
         },
     }
 }
@@ -112,6 +145,7 @@ fn classify(raw: Vec<u8>, sent_get: bool) -> Grab {
             raw: None,
             sent_get,
             tls_hint: true,
+            ..Grab::default()
         };
     }
     let text = String::from_utf8_lossy(&raw[..raw.len().min(2048)]).to_ascii_lowercase();
@@ -122,6 +156,7 @@ fn classify(raw: Vec<u8>, sent_get: bool) -> Grab {
         raw: Some(raw),
         sent_get,
         tls_hint,
+        ..Grab::default()
     }
 }
 

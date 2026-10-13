@@ -89,6 +89,12 @@ pub async fn probe_service(ip: IpAddr, port: u16, fp: &Fingerprints, cfg: &Probe
     // 1. Protocol-agnostic first exchange: server-first banner, else a benign
     //    GET on the same connection (LZR-style; see `grab::grab_adaptive`).
     let first = grab::grab_adaptive(ip, port, cfg.timeout).await;
+    // How long the service took to answer, against the round trip it took to
+    // reach: a static daemon answers in about one RTT, a generated reply does
+    // not (see `crusade_core::Latency`).
+    if let Some(ms) = first.banner_ms {
+        svc.latency = Some(crusade_core::Latency::observe(first.connect_ms, ms));
+    }
     if let Some(raw) = &first.raw {
         // Record a (lossy, trimmed) textual banner.
         let banner = String::from_utf8_lossy(raw);

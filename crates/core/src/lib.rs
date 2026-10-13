@@ -16,8 +16,8 @@ pub mod schedule;
 pub use anomaly::{Anomaly, Population};
 pub use graph::{Cluster, Identifier, LinkKind, Linker};
 pub use model::{
-    AuthState, HoneypotAssessment, HoneypotEvidence, Host, HttpInfo, IcsInfo, Service, SshInfo,
-    Tag, TlsCert, Transport,
+    AuthState, HoneypotAssessment, HoneypotEvidence, Host, HttpInfo, IcsInfo, Latency, Service,
+    SshInfo, Tag, TlsCert, Transport,
 };
 pub use ports::PortModel;
 pub use query::{parse, Field, Filter, FilterValue, ParseError, Query};

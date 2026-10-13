@@ -89,6 +89,23 @@ pub fn merge(
         .collect();
     for prior in &before.services {
         if seen.contains(&(prior.port, prior.transport)) {
+            // The port answered again. Response-time statistics are the one
+            // thing a fresh observation cannot carry on its own, and this is
+            // the only place both observations are in scope.
+            if let Some(stats) = prior.latency {
+                if let Some(fresh) = after
+                    .services
+                    .iter_mut()
+                    .find(|s| s.port == prior.port && s.transport == prior.transport)
+                {
+                    match &mut fresh.latency {
+                        Some(l) => l.absorb(&stats),
+                        // Answered before, silent now: keep what was learned
+                        // rather than starting the count again.
+                        None => fresh.latency = Some(stats),
+                    }
+                }
+            }
             continue;
         }
         if !scope.covers(prior.port, prior.transport) {

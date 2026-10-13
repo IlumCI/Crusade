@@ -160,6 +160,10 @@ pub struct Service {
     /// Crusade never submits credentials or attempts to authenticate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthState>,
+    /// Timing of the first exchange, and its variability across scans. The
+    /// signal an LLM-backed honeypot cannot hide (see [`Latency`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency: Option<Latency>,
     /// Set when a rescan probed this port and got no answer: the service is
     /// pending eviction (see [`crate::lifecycle`]). `None` = live.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_rfc3339")]
@@ -167,6 +171,109 @@ pub struct Service {
     /// Last time the service was actually observed answering.
     #[serde(with = "time::serde::rfc3339")]
     pub observed_at: OffsetDateTime,
+}
+
+/// How long a service took to answer, and how much that varies.
+///
+/// A static daemon writes a banner it already has: the first byte arrives
+/// about one round trip after the connection is established, every time. A
+/// service that *generates* its reply has to do the work first, and an
+/// LLM-backed honeypot has to run inference — hundreds of milliseconds at
+/// best, seconds on CPU, and a different duration for every reply, because
+/// the duration depends on how much text the model decided to produce.
+/// Latency and jitter are therefore what distinguishes the current generation
+/// of honeypots, which defeat banner rules by generating plausible banners
+/// (arXiv:2502.20589; LLM honeypots arXiv:2309.00155, 2409.08234, 2405.05999).
+///
+/// The measurement is normalised against the connect time, which is the one
+/// round trip Crusade can observe without the application in the path. A host
+/// in Australia answers slowly because it is far away, not because it is
+/// thinking; the *ratio* of application time to network time cancels the
+/// distance out. Variance accumulates across rescans by Welford's method, so
+/// nothing but five numbers is stored however long a service is watched.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Latency {
+    /// Milliseconds to complete the TCP handshake: one round trip.
+    pub connect_ms: u32,
+    /// Milliseconds from the established connection to the first byte of the
+    /// answer: one round trip plus however long the service took to decide.
+    pub banner_ms: u32,
+    /// Scans that contributed to the statistics below.
+    pub samples: u32,
+    /// Mean of `banner_ms / connect_ms` over those scans.
+    pub mean_ratio: f32,
+    /// Welford's sum of squared deviations, for the variance of the ratio.
+    pub m2: f32,
+}
+
+impl Latency {
+    /// Samples needed before jitter means anything. Two points always have a
+    /// variance; it just is not evidence of anything.
+    pub const MIN_SAMPLES: u32 = 4;
+
+    /// Record one observation.
+    pub fn observe(connect_ms: u32, banner_ms: u32) -> Latency {
+        let mut l = Latency {
+            connect_ms,
+            banner_ms,
+            samples: 0,
+            mean_ratio: 0.0,
+            m2: 0.0,
+        };
+        l.accumulate(connect_ms, banner_ms);
+        l
+    }
+
+    /// This observation's ratio of answer time to round-trip time.
+    ///
+    /// The connect time is floored at a millisecond: on a LAN or loopback it
+    /// rounds to zero, and dividing by it would turn any delay into infinity.
+    pub fn ratio_of(connect_ms: u32, banner_ms: u32) -> f32 {
+        banner_ms as f32 / connect_ms.max(1) as f32
+    }
+
+    pub fn ratio(&self) -> f32 {
+        Latency::ratio_of(self.connect_ms, self.banner_ms)
+    }
+
+    /// Fold one observation into the running statistics (Welford).
+    pub fn accumulate(&mut self, connect_ms: u32, banner_ms: u32) {
+        let x = Latency::ratio_of(connect_ms, banner_ms);
+        self.samples += 1;
+        let delta = x - self.mean_ratio;
+        self.mean_ratio += delta / self.samples as f32;
+        self.m2 += delta * (x - self.mean_ratio);
+    }
+
+    /// Carry an earlier service's statistics into this fresh observation.
+    pub fn absorb(&mut self, prior: &Latency) {
+        // The prior's own last observation is already in its statistics, so
+        // only the accumulated state moves across; this observation was added
+        // by `observe`.
+        if prior.samples == 0 {
+            return;
+        }
+        let (n_a, n_b) = (prior.samples as f32, self.samples as f32);
+        let total = n_a + n_b;
+        let delta = self.mean_ratio - prior.mean_ratio;
+        // Chan et al.'s parallel variance combination: exact, and independent
+        // of the order scans happened to arrive in.
+        self.m2 = prior.m2 + self.m2 + delta * delta * n_a * n_b / total;
+        self.mean_ratio = (prior.mean_ratio * n_a + self.mean_ratio * n_b) / total;
+        self.samples += prior.samples;
+    }
+
+    /// Coefficient of variation of the ratio, once there are enough samples.
+    ///
+    /// Relative rather than absolute, so a slow-but-consistent service is not
+    /// mistaken for an erratic one.
+    pub fn jitter(&self) -> Option<f32> {
+        if self.samples < Latency::MIN_SAMPLES || self.mean_ratio <= 0.0 {
+            return None;
+        }
+        let variance = self.m2 / (self.samples - 1) as f32;
+        Some(variance.sqrt() / self.mean_ratio)
+    }
 }
 
 /// A service's authentication posture, as passively observed.
@@ -200,6 +307,7 @@ impl Service {
             screenshot_phash: None,
             ics: None,
             auth: None,
+            latency: None,
             pending_since: None,
             observed_at: OffsetDateTime::now_utc(),
         }
@@ -358,5 +466,94 @@ mod opt_rfc3339 {
                 .map_err(serde::de::Error::custom),
             None => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fast_answer_on_a_slow_link_is_not_slow() {
+        // 300 ms to answer sounds slow until you see the 280 ms round trip.
+        let l = Latency::observe(280, 300);
+        assert!(l.ratio() < 2.0, "{}", l.ratio());
+    }
+
+    #[test]
+    fn a_slow_answer_on_a_fast_link_shows_in_the_ratio() {
+        let l = Latency::observe(12, 900);
+        assert!(l.ratio() > 50.0, "{}", l.ratio());
+    }
+
+    /// Connect time rounds to zero on a LAN; dividing by it must not produce
+    /// infinity, or every local service looks like it is thinking.
+    #[test]
+    fn a_zero_round_trip_does_not_divide_by_zero() {
+        let l = Latency::observe(0, 40);
+        assert!(l.ratio().is_finite());
+        assert_eq!(l.ratio(), 40.0);
+    }
+
+    #[test]
+    fn jitter_needs_enough_scans_to_mean_anything() {
+        let mut l = Latency::observe(10, 20);
+        assert_eq!(l.jitter(), None);
+        l.accumulate(10, 22);
+        assert_eq!(l.jitter(), None, "two samples is not evidence");
+        l.accumulate(10, 21);
+        l.accumulate(10, 20);
+        assert!(l.jitter().is_some());
+    }
+
+    #[test]
+    fn a_constant_service_has_almost_no_jitter() {
+        let mut l = Latency::observe(10, 21);
+        for _ in 0..5 {
+            l.accumulate(10, 20);
+        }
+        assert!(l.jitter().unwrap() < 0.1, "{:?}", l.jitter());
+    }
+
+    #[test]
+    fn a_service_whose_answer_time_swings_has_jitter() {
+        let mut l = Latency::observe(10, 200);
+        for ms in [1800, 400, 2600, 700] {
+            l.accumulate(10, ms);
+        }
+        assert!(l.jitter().unwrap() > 0.6, "{:?}", l.jitter());
+    }
+
+    /// Statistics carried across rescans must come out the same as if every
+    /// observation had been made in one pass — otherwise the variance depends
+    /// on when the scans happened to be split.
+    #[test]
+    fn absorbing_earlier_scans_matches_one_pass() {
+        let samples = [(10u32, 30u32), (10, 90), (12, 40), (9, 300), (11, 60)];
+        let mut one = Latency::observe(samples[0].0, samples[0].1);
+        for (c, b) in &samples[1..] {
+            one.accumulate(*c, *b);
+        }
+
+        let mut prior = Latency::observe(samples[0].0, samples[0].1);
+        prior.accumulate(samples[1].0, samples[1].1);
+        prior.accumulate(samples[2].0, samples[2].1);
+        let mut later = Latency::observe(samples[3].0, samples[3].1);
+        later.accumulate(samples[4].0, samples[4].1);
+        later.absorb(&prior);
+
+        assert_eq!(later.samples, one.samples);
+        assert!(
+            (later.mean_ratio - one.mean_ratio).abs() < 1e-3,
+            "{} vs {}",
+            later.mean_ratio,
+            one.mean_ratio
+        );
+        assert!(
+            (later.jitter().unwrap() - one.jitter().unwrap()).abs() < 1e-3,
+            "{:?} vs {:?}",
+            later.jitter(),
+            one.jitter()
+        );
     }
 }

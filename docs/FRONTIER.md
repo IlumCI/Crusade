@@ -73,8 +73,13 @@ Stage 1 - passive, from data already stored:
 | Banner frozen across scans while claiming a stale version | - |
 | Exposed fake LLM APIs (e.g. Ollama) | arXiv:2609.29757 |
 
-Stage 2 - new collection: per-service time-to-banner and response-time
-variance. LLM-backed honeypots defeat static banner rules but leak through
+Stage 2 - **Done** (`crusade_core::Latency`, `grab::grab_adaptive`,
+`honeypot::latency_signals`): per-service time-to-banner against the
+handshake's round trip, with variance accumulated across rescans (Welford,
+combined by Chan's parallel formula so the result is split-independent).
+Signals `slow-to-answer` and `erratic-answer-time`; a ratio alone is not
+enough, since a fast link makes any delay look large, so an absolute floor
+applies too. LLM-backed honeypots defeat static banner rules but leak through
 latency and jitter (arXiv:2502.20589; LLM honeypots arXiv:2309.00155,
 2409.08234, 2405.05999, 2605.29963).
 

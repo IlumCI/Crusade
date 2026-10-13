@@ -226,6 +226,7 @@ impl HoneypotScorer {
         ics_signals(host, &mut ev);
         os_contradiction_signal(host, &mut ev);
         silent_ports_signal(host, &mut ev);
+        latency_signals(host, &mut ev);
         if let Some(stats) = &self.ports {
             port_pair_signal(host, stats, &mut ev);
         }
@@ -442,6 +443,87 @@ fn silent_ports_signal(host: &Host, ev: &mut Vec<HoneypotEvidence>) {
     }
 }
 
+/// Minimum answer-to-round-trip ratio counted as the service thinking rather
+/// than the network being slow. Three round trips covers a fork, a TLS
+/// handshake behind a proxy and an unlucky scheduler.
+const SLOW_RATIO: f32 = 5.0;
+/// Below this there is no room for inference whatever the ratio says: a 20 ms
+/// answer on a 2 ms link is process startup, not a language model. The floor
+/// matters more than the ratio, because the ratio is unbounded on fast links.
+const SLOW_FLOOR_MS: u32 = 250;
+/// Coefficient of variation above which a service's answer time is erratic.
+///
+/// The question this threshold answers is "does the answer time vary more
+/// than the network can explain". Jitter on a stable path is a small
+/// fraction of the round trip, so a standard deviation of 40% of the mean is
+/// already far outside it — while generated text, whose duration follows how
+/// much the model chose to produce, routinely swings by a factor of several.
+/// The gap between those two regimes is wide, which is why the threshold does
+/// not have to be precise.
+const JITTER_CV: f32 = 0.40;
+
+/// Time-to-answer and its variability.
+///
+/// This is the signal the current generation of honeypots cannot remove. A
+/// honeypot that generates its banners with a language model defeats every
+/// signature in the rule pack — the banner is novel, plausible and
+/// inconsistent with nothing — but it has to run inference before it can
+/// answer, and inference is slow and variable in a way that writing a
+/// constant string is not (arXiv:2502.20589; LLM honeypots arXiv:2309.00155,
+/// 2409.08234, 2405.05999).
+///
+/// Both halves are needed. Latency alone flags a loaded server; jitter alone
+/// flags a congested path. Neither is weighted as heavily as a rule hit,
+/// because a real service under real load does look like this — which is why
+/// the detail says what was measured, so the judgement can be checked.
+fn latency_signals(host: &Host, ev: &mut Vec<HoneypotEvidence>) {
+    let mut slow: Vec<String> = Vec::new();
+    let mut erratic: Vec<String> = Vec::new();
+    for svc in &host.services {
+        let Some(l) = &svc.latency else { continue };
+        if l.banner_ms >= SLOW_FLOOR_MS && l.ratio() >= SLOW_RATIO {
+            slow.push(format!(
+                "port {}: {} ms to answer on a {} ms round trip ({:.0}x)",
+                svc.port,
+                l.banner_ms,
+                l.connect_ms.max(1),
+                l.ratio()
+            ));
+        }
+        if let Some(cv) = l.jitter() {
+            if cv >= JITTER_CV {
+                erratic.push(format!(
+                    "port {}: answer time varies by {:.0}% over {} scans",
+                    svc.port,
+                    cv * 100.0,
+                    l.samples
+                ));
+            }
+        }
+    }
+    if !slow.is_empty() {
+        ev.push(HoneypotEvidence {
+            signal: "slow-to-answer".to_string(),
+            weight: 0.35,
+            detail: format!(
+                "answering takes far longer than reaching it, as generating a \
+                 reply would: {}",
+                slow.join("; ")
+            ),
+        });
+    }
+    if !erratic.is_empty() {
+        ev.push(HoneypotEvidence {
+            signal: "erratic-answer-time".to_string(),
+            weight: 0.40,
+            detail: format!(
+                "a constant banner takes the same time every scan; this does not: {}",
+                erratic.join("; ")
+            ),
+        });
+    }
+}
+
 fn port_pair_signal(host: &Host, stats: &PortModel, ev: &mut Vec<HoneypotEvidence>) {
     let ports: Vec<u16> = host
         .services
@@ -498,6 +580,76 @@ mod tests {
         let mut s = Service::new(port, Transport::Tcp);
         s.ics = Some(IcsInfo::new(proto));
         s
+    }
+
+    fn timed_service(port: u16, connect_ms: u32, banner_ms: &[u32]) -> Service {
+        let mut s = Service::new(port, Transport::Tcp);
+        s.banner = Some("SSH-2.0-OpenSSH_9.6".into());
+        let mut l = crusade_core::Latency::observe(connect_ms, banner_ms[0]);
+        for ms in &banner_ms[1..] {
+            l.accumulate(connect_ms, *ms);
+        }
+        s.latency = Some(l);
+        s
+    }
+
+    /// A real daemon on a slow link: 300 ms to answer, but 280 ms of that is
+    /// the distance. Nothing to see.
+    #[test]
+    fn a_distant_but_honest_service_is_not_flagged() {
+        let mut h = host();
+        h.services
+            .push(timed_service(22, 280, &[300, 305, 295, 302]));
+        let a = HoneypotScorer::new(HoneypotRules::builtin()).assess(&h);
+        assert!(
+            !a.evidence
+                .iter()
+                .any(|e| e.signal.contains("answer") || e.signal.contains("slow")),
+            "{:?}",
+            a.evidence
+        );
+    }
+
+    /// Inference before answering: two orders of magnitude over the round
+    /// trip, and a different duration every scan.
+    #[test]
+    fn a_generated_answer_shows_in_time_and_variance() {
+        let mut h = host();
+        h.services
+            .push(timed_service(22, 11, &[900, 2600, 500, 1800, 1200]));
+        let a = HoneypotScorer::new(HoneypotRules::builtin()).assess(&h);
+        let signals: Vec<&str> = a.evidence.iter().map(|e| e.signal.as_str()).collect();
+        assert!(signals.contains(&"slow-to-answer"), "{signals:?}");
+        assert!(signals.contains(&"erratic-answer-time"), "{signals:?}");
+        assert!(a.score > 0.5, "{}", a.score);
+    }
+
+    /// A fast link makes the ratio enormous for a delay far too short to be
+    /// inference. The absolute floor is what stops that being a finding.
+    #[test]
+    fn a_short_delay_on_a_fast_link_is_not_inference() {
+        let mut h = host();
+        h.services.push(timed_service(22, 1, &[30, 30, 31, 29]));
+        let a = HoneypotScorer::new(HoneypotRules::builtin()).assess(&h);
+        assert!(
+            !a.evidence.iter().any(|e| e.signal == "slow-to-answer"),
+            "{:?}",
+            a.evidence
+        );
+    }
+
+    /// Slow but consistent is load, not generation, so only the latency
+    /// signal fires and the score stays below the tagging threshold.
+    #[test]
+    fn a_consistently_slow_service_is_weaker_evidence() {
+        let mut h = host();
+        h.services
+            .push(timed_service(22, 10, &[800, 810, 795, 805, 802]));
+        let a = HoneypotScorer::new(HoneypotRules::builtin()).assess(&h);
+        let signals: Vec<&str> = a.evidence.iter().map(|e| e.signal.as_str()).collect();
+        assert!(signals.contains(&"slow-to-answer"), "{signals:?}");
+        assert!(!signals.contains(&"erratic-answer-time"), "{signals:?}");
+        assert!(a.score < HONEYPOT_TAG_THRESHOLD, "{}", a.score);
     }
 
     #[test]
