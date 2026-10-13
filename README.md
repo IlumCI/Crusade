@@ -174,6 +174,25 @@ Sarabi & Liu (IMC 2018) take the learned route, a VAE over binary tags, and
 get compact embeddings — a better basis for clustering. For "show me what is
 weird, and say why", surprisal is cheaper and clearer.
 
+## Replacing the IPv6 generator
+
+IPv6 cannot be swept, so the generator *is* the scan: whatever it proposes is
+what gets probed, and the rest of a space with 2^128 addresses in it is never
+looked at. That makes it the one component most worth replacing, so it is a
+trait — `crusade_scan::Generator`, with the propose-then-reward contract that
+6Sense (USENIX Sec 2024) and 6SEVEN (arXiv:2609.08098) both fit, and a test
+that the trait alone is enough to drive the scan.
+
+What ships behind it is the space-partitioning baseline (6Gen/6Tree-style
+nybble regions with online feedback). The learned generators the plan listed —
+6Vision (arXiv:2501.01683), 6Diffusion (arXiv:2412.19243) — are not
+implemented, and the reason is not that they look unpromising. Neither
+publishes pretrained weights, so shipping one means training it, and nothing
+here can measure whether it helped: this container has no IPv6 stack, which is
+already why the baseline's real-world hit rate is documented as untested. A
+generator whose benefit cannot be measured is a dependency, not a capability.
+The seam is ready for one.
+
 ## What to look at next
 
 An analyst with one interesting host wants the same thing every time: what

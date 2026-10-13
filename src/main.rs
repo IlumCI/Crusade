@@ -2223,19 +2223,24 @@ async fn cmd_ipv6(cfg: &Config, opts: Ipv6Opts) -> Result<()> {
         return Ok(());
     }
 
-    let mut generator = crusade_scan::TargetGenerator::from_seeds(&seeds);
-    eprintln!(
-        "learned {} dense region(s) from {} seed(s)",
-        generator.regions(),
-        seeds.len()
-    );
-    if generator.regions() == 0 {
+    let partitioner = crusade_scan::TargetGenerator::from_seeds(&seeds);
+    let regions = partitioner.regions();
+    if regions == 0 {
         println!(
             "The seeds share no varying prefix, so there is nothing to generalise \
              from. More seeds, from more networks, would help."
         );
         return Ok(());
     }
+    // Held as the trait, not the concrete type: in IPv6 the generator *is* the
+    // scan, so it is the one component most worth replacing, and the rest of
+    // this command must not know which one it got.
+    let mut generator: Box<dyn crusade_scan::Generator> = Box::new(partitioner);
+    eprintln!(
+        "generator: {} (from {} seed(s))",
+        generator.describe(),
+        seeds.len()
+    );
 
     let datasets = Arc::new(pipeline::Datasets::load(cfg)?);
     let mut total_found = 0usize;

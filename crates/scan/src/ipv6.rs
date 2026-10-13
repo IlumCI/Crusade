@@ -306,6 +306,34 @@ impl Region {
     }
 }
 
+/// A source of IPv6 candidates.
+///
+/// IPv6 cannot be swept, so the generator *is* the scan: whatever it proposes
+/// is what gets probed, and everything else in the address space is never
+/// looked at. That makes it the one component most worth replacing, which is
+/// why it is a trait.
+///
+/// The contract is the online loop every published generator fits:
+/// propose a budget of addresses, be told which answered, and let that change
+/// what comes next. 6Sense (USENIX Sec 2024) and 6SEVEN (arXiv:2609.08098)
+/// both work this way, as does the space-partitioning baseline here.
+///
+/// A generator must never propose the same address twice and never propose a
+/// seed, because a budget spent re-probing a known address is a budget not
+/// spent discovering anything.
+pub trait Generator {
+    /// Propose up to `budget` fresh addresses. Fewer is correct when the
+    /// generator has nothing left worth guessing; padding with noise is not.
+    fn generate(&mut self, budget: usize) -> Vec<Ipv6Addr>;
+
+    /// Record whether a proposed address answered.
+    fn reward(&mut self, addr: Ipv6Addr, responsive: bool);
+
+    /// A short description for the operator, since which generator ran
+    /// determines what the results mean.
+    fn describe(&self) -> String;
+}
+
 /// Generates IPv6 candidates from a seed set.
 ///
 /// Seeds are grouped by shared nybble prefixes; a prefix that several seeds
@@ -445,8 +473,94 @@ impl TargetGenerator {
     }
 }
 
+impl Generator for TargetGenerator {
+    fn generate(&mut self, budget: usize) -> Vec<Ipv6Addr> {
+        TargetGenerator::generate(self, budget)
+    }
+
+    fn reward(&mut self, addr: Ipv6Addr, responsive: bool) {
+        TargetGenerator::reward(self, addr, responsive)
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "space partitioning over {} learned region(s) (6Gen/6Tree-style)",
+            self.regions()
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A generator that proposes a fixed list, for checking that the trait is
+    /// enough to drive the pipeline — the property that makes it worth having.
+    struct Fixed {
+        queue: Vec<Ipv6Addr>,
+        rewarded: Vec<(Ipv6Addr, bool)>,
+    }
+
+    impl Generator for Fixed {
+        fn generate(&mut self, budget: usize) -> Vec<Ipv6Addr> {
+            let take = budget.min(self.queue.len());
+            self.queue.drain(..take).collect()
+        }
+
+        fn reward(&mut self, addr: Ipv6Addr, responsive: bool) {
+            self.rewarded.push((addr, responsive));
+        }
+
+        fn describe(&self) -> String {
+            "fixed list".to_string()
+        }
+    }
+
+    #[test]
+    fn the_trait_is_enough_to_drive_a_generator() {
+        let addrs: Vec<Ipv6Addr> = ["2001:db8::1", "2001:db8::2", "2001:db8::3"]
+            .iter()
+            .map(|a| a.parse().unwrap())
+            .collect();
+        let mut g: Box<dyn Generator> = Box::new(Fixed {
+            queue: addrs.clone(),
+            rewarded: Vec::new(),
+        });
+        let first = g.generate(2);
+        assert_eq!(first, addrs[..2]);
+        for a in &first {
+            g.reward(*a, true);
+        }
+        assert_eq!(g.generate(5).len(), 1, "a generator may return fewer");
+        assert!(g.generate(5).is_empty(), "and nothing when exhausted");
+        assert_eq!(g.describe(), "fixed list");
+    }
+
+    #[test]
+    fn the_space_partitioner_satisfies_the_trait() {
+        // A real provider prefix: 2001:db8::/32 is documentation space and
+        // is filtered as unscannable, so candidates from it never survive.
+        let seeds: Vec<Ipv6Addr> = [
+            "2a00:1450:4001:801::1",
+            "2a00:1450:4001:802::1",
+            "2a00:1450:4001:803::1",
+            "2a00:1450:4001:804::1",
+        ]
+        .iter()
+        .map(|a| a.parse().unwrap())
+        .collect();
+        let mut g: Box<dyn Generator> = Box::new(TargetGenerator::from_seeds(&seeds));
+        assert!(g.describe().contains("region"), "{}", g.describe());
+        let produced = g.generate(8);
+        assert!(!produced.is_empty());
+        for a in &produced {
+            assert!(!seeds.contains(a), "{a} is a seed");
+            g.reward(*a, false);
+        }
+        let again = g.generate(8);
+        for a in &again {
+            assert!(!produced.contains(a), "{a} was proposed twice");
+        }
+    }
+
     use super::*;
     use std::str::FromStr;
 

@@ -57,7 +57,8 @@ mod udp;
 pub use blocklist::Blocklist;
 pub use discovery::{masscan_discover, MasscanConfig};
 pub use ipv6::{
-    alias_probes, clean_seeds, is_scannable, Alias, Dealiaser, SeedReport, TargetGenerator,
+    alias_probes, clean_seeds, is_scannable, Alias, Dealiaser, Generator, SeedReport,
+    TargetGenerator,
 };
 pub use rate::{RateLimiter, RateLimiterParams};
 pub use scanner::{ScanConfig, TcpScanner};
