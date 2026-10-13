@@ -245,6 +245,18 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         samples: usize,
     },
+    /// Rank the queries worth running next from one host, by how much each
+    /// would narrow the index. Reads the index only; sends nothing.
+    Pivot {
+        /// The host to pivot from.
+        ip: String,
+        /// How many pivots to list.
+        #[arg(long, default_value_t = 12)]
+        top: usize,
+        /// Also show the pivots that were discarded, and why.
+        #[arg(long)]
+        all: bool,
+    },
     /// Show which CPE a product name resolves to, and on what evidence.
     /// Reads the CVE cache only; sends nothing.
     Resolve {
@@ -520,6 +532,7 @@ async fn main() -> Result<()> {
         } => cmd_similar(&cfg, &text.join(" "), like, filter, limit, json),
         Command::Embed { query } => cmd_embed(&cfg, &query.join(" ")),
         Command::Resolve { name, top } => cmd_resolve(&cfg, &name.join(" "), top),
+        Command::Pivot { ip, top, all } => cmd_pivot(&cfg, &ip, top, all),
         Command::Ask {
             question,
             run,
@@ -1712,6 +1725,74 @@ fn ask_model(
          Without it `crusade ask` uses the cue translator, which is the baseline \
          the model is measured against."
     )
+}
+
+/// Rank the queries worth running next from one host.
+///
+/// The ranking is counted, not guessed: every candidate pivot is a query, and
+/// how many hosts it matches is a fact the index can be asked for. A pivot
+/// matching only this host is a round trip; one matching a fifth of the index
+/// is a default. What is left, rarest first, is the lead.
+fn cmd_pivot(cfg: &Config, ip: &str, top: usize, show_all: bool) -> Result<()> {
+    use crusade_core::pivot;
+    let _: IpAddr = ip.parse().with_context(|| format!("invalid IP: {ip}"))?;
+    let store = Store::open(&cfg.database.path)?;
+    let Some(host) = store.get_host(ip)? else {
+        println!("{ip} is not in the index.");
+        return Ok(());
+    };
+    let index_size = store.count(&crusade_core::Query::default())?;
+    let cluster = store.host_cluster(ip)?;
+    let candidates = pivot::candidates(&host, cluster.as_deref());
+    if candidates.is_empty() {
+        println!("{ip} presents nothing to pivot on.");
+        return Ok(());
+    }
+
+    let mut counts: Vec<i64> = Vec::with_capacity(candidates.len());
+    for c in &candidates {
+        // A malformed pivot would be a bug in the candidate list rather than
+        // the operator's problem, so it is counted as matching nothing and
+        // reported with --all.
+        let n = match query::parse(&c.query) {
+            Ok(q) => store.count(&q).unwrap_or(0),
+            Err(e) => {
+                tracing::warn!("pivot {:?} does not parse: {e}", c.query);
+                0
+            }
+        };
+        counts.push(n);
+    }
+
+    let ranked = pivot::rank(&candidates, &counts, index_size);
+    println!(
+        "{ip}: {} pivot(s) worth running, of {} considered, against an \
+              index of {index_size} host(s)\n",
+        ranked.len(),
+        candidates.len()
+    );
+    for p in ranked.iter().take(top) {
+        println!("  {p}");
+    }
+    if ranked.len() > top {
+        println!("  … and {} more", ranked.len() - top);
+    }
+
+    if show_all {
+        println!("\n  discarded:");
+        for (c, n) in candidates.iter().zip(&counts) {
+            if ranked.iter().any(|p| p.query == c.query) {
+                continue;
+            }
+            let why = if *n < pivot::MIN_MATCHES {
+                "matches only this host"
+            } else {
+                "matches too much of the index to be a lead"
+            };
+            println!("    {:<48} {:>7} host(s)  {why}", c.query, n);
+        }
+    }
+    Ok(())
 }
 
 /// Show what a product name resolves to.

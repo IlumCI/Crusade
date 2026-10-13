@@ -174,6 +174,38 @@ Sarabi & Liu (IMC 2018) take the learned route, a VAE over binary tags, and
 get compact embeddings — a better basis for clustering. For "show me what is
 weird, and say why", surprisal is cheaper and clearer.
 
+## What to look at next
+
+An analyst with one interesting host wants the same thing every time: what
+else belongs to whoever runs this, and what else looks like it.
+
+```
+crusade pivot 203.0.113.7         # the queries worth running, best first
+crusade pivot 203.0.113.7 --all   # and the ones that were discarded, with why
+```
+
+Crusade already holds every pivot that answers those - shared certificates,
+host keys, favicons, JARM and HASSH fingerprints, screenshot templates, the
+assigned cluster, the network, the autonomous system. The useful part is
+knowing which of them is worth running, and most are not, in two distinct
+ways. A pivot matching only this host is a round trip to where you started:
+the identifier is unique. A pivot matching a fifth of the index is a default,
+and "every host running nginx" is not a lead. What is left is ranked by
+surprisal - `-log2(matches / index size)` - so the rarest pivot that still
+matches something else comes first.
+
+Every candidate is a real query and its result size is counted, not estimated,
+so the ranking is a fact about this index rather than a guess. A test asserts
+every pivot the planner can emit parses as a filter, because a list of
+unrunnable strings would be worse than no list.
+
+The plan called for a local language model planning these steps (ArachNet,
+arXiv:2511.10611). It is not built, and the reason is measured rather than
+assumed: the same model class, asked for a *single* query under a grammar that
+made malformed output impossible, got 7 of 20 ordinary questions right. A
+planner is a sequence of such decisions, each conditioned on the last, so the
+error compounds. What the model cannot do reliably, counting does exactly.
+
 ## Infrastructure clustering
 
 Two hosts presenting the same TLS certificate, or the same SSH host key, are

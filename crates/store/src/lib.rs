@@ -1025,6 +1025,19 @@ impl Store {
         Ok(per_host.into_iter().collect())
     }
 
+    /// The cluster id assigned to one host, if any.
+    pub fn host_cluster(&self, ip: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT cluster FROM hosts WHERE ip = ?1",
+                params![ip],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     /// Replace every stored cluster assignment.
     pub fn set_clusters(&mut self, assignments: &[(String, String)]) -> Result<()> {
         let tx = self.conn.transaction()?;

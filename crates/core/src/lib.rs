@@ -9,6 +9,7 @@ pub mod graph;
 pub mod lifecycle;
 pub mod model;
 pub mod nlq;
+pub mod pivot;
 pub mod ports;
 pub mod query;
 pub mod revisit;
