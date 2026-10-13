@@ -11,6 +11,7 @@ pub mod model;
 pub mod nlq;
 pub mod ports;
 pub mod query;
+pub mod revisit;
 pub mod schedule;
 
 pub use anomaly::{Anomaly, Population};

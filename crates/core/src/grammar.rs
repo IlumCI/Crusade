@@ -31,6 +31,19 @@ pub const ROOT: &str = "root";
 /// generation to the fields a question could plausibly need; empty means all
 /// of them.
 pub fn gbnf(fields: &[Field]) -> String {
+    gbnf_with(fields, true)
+}
+
+/// Build the grammar, optionally without the free-text alternative.
+///
+/// Free text is part of the query language — a bare word is matched against
+/// banners — but including it in a grammar used for *generation* makes the
+/// grammar almost vacuous: every sentence is a valid query, so the constraint
+/// stops constraining and a small model is free to echo the question back.
+/// Measured with Qwen2.5-0.5B, that is exactly what it does. For generation,
+/// pass `free_text: false` and let the caller decide what to do with a
+/// question the model could not express as filters.
+pub fn gbnf_with(fields: &[Field], free_text: bool) -> String {
     let fields: Vec<Field> = if fields.is_empty() {
         Field::ALL.to_vec()
     } else {
@@ -39,7 +52,15 @@ pub fn gbnf(fields: &[Field]) -> String {
 
     let mut out = String::new();
     out.push_str("# Generated from crusade_core::query. Do not edit by hand.\n");
-    out.push_str("root ::= term (\" \" term)*\n");
+    // The optional leading space is not cosmetic. A model completing
+    // `Query:` wants to emit a space-prefixed piece, which is how its
+    // tokenizer represents the start of a word. Forbid that and every such
+    // piece is masked at the first position, so generation falls to whatever
+    // unprefixed key happens to rank highest — measured with Qwen2.5-1.5B,
+    // that was a spurious `ics:modbus` in front of seven of eight otherwise
+    // reasonable queries, which no amount of prompting removed. The parser
+    // skips leading whitespace anyway.
+    out.push_str("root ::= \" \"? term (\" \" term)*\n");
 
     // A term is a filter or a free-text word. Negation is a prefix on filters
     // only, matching the parser: `-port:22` is a filter, `-nginx` is text.
@@ -47,7 +68,9 @@ pub fn gbnf(fields: &[Field]) -> String {
     for (i, _) in fields.iter().enumerate() {
         alts.push(format!("filter{i}"));
     }
-    alts.push("text".to_string());
+    if free_text {
+        alts.push("text".to_string());
+    }
     out.push_str(&format!("term ::= {}\n", alts.join(" | ")));
 
     for (i, field) in fields.iter().enumerate() {
@@ -70,7 +93,9 @@ pub fn gbnf(fields: &[Field]) -> String {
     out.push_str("word ::= [a-zA-Z0-9_.:/+*%@-]+\n");
     out.push_str("phrase ::= \"\\\"\" [^\"\\n]+ \"\\\"\"\n");
     out.push_str("value ::= word | phrase\n");
-    out.push_str("text ::= word | phrase\n");
+    if free_text {
+        out.push_str("text ::= word | phrase\n");
+    }
 
     // Per-field enum and score rules, emitted only where used.
     for (i, field) in fields.iter().enumerate() {
@@ -86,6 +111,134 @@ pub fn gbnf(fields: &[Field]) -> String {
         }
     }
     out
+}
+
+/// Literal values a field may take, drawn from the index being searched.
+///
+/// The grammar alone cannot stop a model writing a filter whose value exists
+/// nowhere: `product:nginx` and `product:boxes` are equally well formed, and a
+/// small model asked to translate `boxes in the netherlands nobody needs a
+/// password for` will reach for a free-text field and put `boxes` in it —
+/// measured with Qwen2.5-1.5B, which produced `ics:boxes`, `ics:databases`
+/// and `ics:mail` on three consecutive questions.
+///
+/// Restricting each free-text field to the values the index has actually seen
+/// closes that off. `product:nginx` stays possible because nginx is in the
+/// index; `product:boxes` becomes unrepresentable. It also changes what an
+/// empty result means: a query whose every value exists somewhere in the index
+/// returns nothing because no host matches the *combination*, not because the
+/// translation was nonsense.
+///
+/// This is the same principle as CPE resolution in `crusade-vuln`: candidates
+/// come from the data, never from free text.
+#[derive(Debug, Clone, Default)]
+pub struct IndexVocab {
+    /// `(field, values)`. A field absent here keeps its generic value rule.
+    pub values: Vec<(Field, Vec<String>)>,
+}
+
+impl IndexVocab {
+    /// Values for one field, if any were supplied.
+    fn get(&self, field: Field) -> Option<&[String]> {
+        self.values
+            .iter()
+            .find(|(f, _)| *f == field)
+            .map(|(_, v)| v.as_slice())
+            .filter(|v| !v.is_empty())
+    }
+}
+
+/// Build a grammar whose free-text values are restricted to what the index
+/// holds (see [`IndexVocab`]).
+///
+/// A field with a supplied vocabulary can only take one of those values. A
+/// field with none is dropped entirely when `strict`, since a field the index
+/// has no values for cannot match anything anyway, and offering it only gives
+/// a model somewhere wrong to put a word.
+pub fn gbnf_for_index(vocab: &IndexVocab, strict: bool) -> String {
+    let fields = index_fields(vocab, strict);
+    let mut out = gbnf_with(&fields, false);
+    for (i, field) in fields.iter().enumerate() {
+        if field.value_kind() != ValueKind::Text {
+            continue;
+        }
+        let Some(values) = vocab.get(*field) else {
+            continue;
+        };
+        // One alternative per value, each a literal, so nothing outside the
+        // list can be generated. Values are capped: a grammar with ten
+        // thousand alternatives costs more to compile than it saves.
+        let alts: Vec<String> = values
+            .iter()
+            .take(MAX_VOCAB_ALTERNATIVES)
+            .map(|v| format!("\"{}\"", escape_literal(v)))
+            .collect();
+        if alts.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("vocab{i} ::= {}\n", alts.join(" | ")));
+        out = out.replace(
+            &format!("filter{i} ::= \"-\"? \"{}:\" value", field.as_str()),
+            &format!("filter{i} ::= \"-\"? \"{}:\" vocab{i}", field.as_str()),
+        );
+    }
+    out
+}
+
+/// The fields a restricted grammar will contain.
+///
+/// Exposed because a prompt that describes fields the grammar does not accept
+/// is worse than no prompt at all: the model aims at a field it cannot use,
+/// the grammar refuses the token, and generation lands on whatever the grammar
+/// *does* allow next. Measured with Qwen2.5-1.5B against a prompt listing all
+/// 29 fields and a grammar allowing 18, every one of eight questions came back
+/// with a spurious `ics:` filter. Describing exactly the allowed fields fixed
+/// it. So callers build their prompt from this, not from `Field::ALL`.
+pub fn index_fields(vocab: &IndexVocab, strict: bool) -> Vec<Field> {
+    Field::ALL
+        .iter()
+        .copied()
+        .filter(|f| !strict || f.value_kind() != ValueKind::Text || vocab.get(*f).is_some())
+        .collect()
+}
+
+/// A field reference describing exactly a restricted grammar's fields, with
+/// each free-text field's allowed values spelled out.
+pub fn field_reference_for_index(vocab: &IndexVocab, strict: bool) -> String {
+    let fields = index_fields(vocab, strict);
+    let mut out = String::new();
+    for field in fields {
+        if field.value_kind() == ValueKind::Text {
+            if let Some(values) = vocab.get(field) {
+                let shown: Vec<&str> = values.iter().take(12).map(|v| v.as_str()).collect();
+                out.push_str(&format!("{}:{}", field.as_str(), shown.join("|")));
+                if values.len() > shown.len() {
+                    out.push_str(&format!("|… ({} values)", values.len()));
+                }
+                out.push('\n');
+                continue;
+            }
+        }
+        out.push_str(&field_reference(&[field]));
+    }
+    out
+}
+
+/// Values per field in a generated grammar. Beyond this the grammar takes
+/// longer to compile than the generation it constrains.
+pub const MAX_VOCAB_ALTERNATIVES: usize = 256;
+
+/// Escape a value for a GBNF string literal, and reject what cannot be
+/// escaped safely.
+fn escape_literal(v: &str) -> String {
+    v.chars()
+        .filter(|c| !c.is_control())
+        .map(|c| match c {
+            '"' => "\\\"".to_string(),
+            '\\' => "\\\\".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 /// The rule reference for one field's value.
@@ -178,12 +331,88 @@ mod tests {
 
     /// A subset grammar names only what was asked for, which is how a caller
     /// keeps a small model's choices down to the fields a question needs.
+    /// A model's tokenizer puts the space in front of the word, so the first
+    /// position has to accept one.
+    #[test]
+    fn the_root_accepts_a_leading_space() {
+        assert!(gbnf(&[]).contains("root ::= \" \"? term"), "{}", gbnf(&[]));
+    }
+
     #[test]
     fn a_subset_grammar_omits_the_rest() {
         let g = gbnf(&[Field::Port, Field::Country]);
         assert!(g.contains("\"port:\""));
         assert!(g.contains("\"country:\""));
         assert!(!g.contains("\"honeypot:\""));
+    }
+
+    /// The generation grammar must not accept an arbitrary sentence, or it
+    /// constrains nothing and the model echoes the question.
+    #[test]
+    fn without_free_text_a_sentence_is_not_a_query() {
+        let g = gbnf_with(&[], false);
+        assert!(!g.contains("| text"), "{g}");
+        assert!(!g.contains("text ::="), "{g}");
+        assert!(gbnf(&[]).contains("text ::="));
+    }
+
+    fn vocab() -> IndexVocab {
+        IndexVocab {
+            values: vec![
+                (
+                    Field::Product,
+                    vec!["nginx".to_string(), "Apache httpd".to_string()],
+                ),
+                (Field::Tag, vec!["iot".to_string()]),
+            ],
+        }
+    }
+
+    /// A value the index has never seen must be unrepresentable, which is the
+    /// whole point: `product:boxes` is well-formed English and a mistake.
+    #[test]
+    fn a_restricted_grammar_offers_only_the_values_the_index_has() {
+        let g = gbnf_for_index(&vocab(), true);
+        assert!(g.contains("\"nginx\""), "{g}");
+        assert!(g.contains("\"Apache httpd\""), "{g}");
+        assert!(!g.contains("boxes"));
+        // The product filter must reference the restricted rule, not `value`.
+        let line = g
+            .lines()
+            .find(|l| l.contains("\"product:\""))
+            .unwrap_or_default();
+        assert!(line.contains("vocab"), "{line}");
+    }
+
+    /// A free-text field with nothing behind it in this index is dropped: it
+    /// could not match anything, and offering it only gives a model somewhere
+    /// wrong to put a word.
+    #[test]
+    fn fields_with_no_values_are_dropped_when_strict() {
+        let g = gbnf_for_index(&vocab(), true);
+        assert!(g.contains("\"product:\""));
+        assert!(!g.contains("\"org:\""), "{g}");
+        // Typed fields are never dropped: their values do not come from the
+        // index.
+        assert!(g.contains("\"port:\""));
+        assert!(g.contains("\"country:\""));
+        assert!(g.contains("\"has_vuln:\""));
+    }
+
+    #[test]
+    fn a_lenient_restricted_grammar_keeps_every_field() {
+        let g = gbnf_for_index(&vocab(), false);
+        assert!(g.contains("\"org:\""), "{g}");
+        assert!(g.contains("\"nginx\""));
+    }
+
+    #[test]
+    fn a_quote_in_a_value_cannot_break_out_of_the_literal() {
+        let v = IndexVocab {
+            values: vec![(Field::Product, vec!["we\"ird".to_string()])],
+        };
+        let g = gbnf_for_index(&v, true);
+        assert!(g.contains("we\\\"ird"), "{g}");
     }
 
     #[test]

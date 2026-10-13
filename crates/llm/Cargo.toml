@@ -1,0 +1,18 @@
+[package]
+name = "crusade-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Off by default: llama.cpp is a C++ build of several minutes and the model is
+# hundreds of megabytes. Without it this crate still carries the prompt and the
+# verification step, which are pure and tested in every build.
+default = []
+llm = ["dep:llama-cpp-2"]
+
+[dependencies]
+crusade-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+llama-cpp-2 = { version = "0.1.159", optional = true }

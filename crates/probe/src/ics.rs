@@ -985,6 +985,30 @@ async fn probe_dnp3(ip: IpAddr, port: u16, timeout: Duration) -> Option<Service>
 
 #[cfg(test)]
 mod tests {
+    /// The query language declares `ics:` a closed set. Every protocol name
+    /// this module can produce has to be in it, or a host would be indexed
+    /// under a value no query could ask for.
+    #[test]
+    fn every_protocol_emitted_is_in_the_query_languages_list() {
+        let source = include_str!("ics.rs");
+        // Assembled at runtime so this test's own source is not a match.
+        let needle = format!("{}::new({}", "IcsInfo", '"');
+        let mut found = 0;
+        for (at, _) in source.match_indices(needle.as_str()) {
+            let name: String = source[at + needle.len()..]
+                .chars()
+                .take_while(|c| *c != '"')
+                .collect();
+            assert!(
+                crusade_core::query::ICS_PROTOCOLS.contains(&name.as_str()),
+                "this module emits ics protocol {name:?}, which `ics:` does not accept; \
+                 add it to crusade_core::query::ICS_PROTOCOLS"
+            );
+            found += 1;
+        }
+        assert!(found >= 5, "found only {found} protocol constructions");
+    }
+
     use super::*;
 
     // --- Modbus ------------------------------------------------------------

@@ -67,6 +67,16 @@ fn migrate(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_services_pending ON services(pending_since)",
     )?;
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_hosts_honeypot ON hosts(honeypot)")?;
+    // Per-host revisit interval, in seconds (see `crusade_core::revisit`).
+    // NULL means the host has no history yet and its network class decides.
+    if !has_column("hosts", "revisit_secs")? {
+        conn.execute_batch("ALTER TABLE hosts ADD COLUMN revisit_secs INTEGER")?;
+    }
+    // The rescan queue reads "due" as last_seen + revisit_secs, so the index
+    // has to cover both columns in that order.
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_hosts_due ON hosts(last_seen, revisit_secs)",
+    )?;
 
     // Schema 2 re-keyed banner_fts by hosts.rowid. Rows written by an earlier
     // version carry unrelated rowids, so free-text search would silently miss
@@ -877,8 +887,66 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Hosts whose own revisit interval has elapsed, most overdue first.
+    ///
+    /// The ordering is by how far past due a host is *relative* to its
+    /// interval, not by absolute age. A cloud host six hours late on a
+    /// six-hour interval has more likely changed than a colocated one six
+    /// hours late on three weeks, and sorting by `last_seen` alone would
+    /// always serve the second first — which is how a single interval for the
+    /// whole index wastes its budget on the hosts least likely to have moved.
+    ///
+    /// `fallback_secs` applies to hosts with no interval recorded yet.
+    pub fn due_host_ips(&self, now: i64, fallback_secs: i64, limit: usize) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ip FROM hosts
+             WHERE last_seen + COALESCE(revisit_secs, ?2) <= ?1
+             ORDER BY (CAST(?1 - last_seen AS REAL) / COALESCE(revisit_secs, ?2)) DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![now, fallback_secs.max(1), limit as i64], |r| {
+            r.get::<_, String>(0)
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Record a host's next revisit interval.
+    pub fn set_revisit_interval(&self, ip: &str, secs: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE hosts SET revisit_secs = ?2 WHERE ip = ?1",
+            params![ip, secs],
+        )?;
+        Ok(())
+    }
+
+    /// A host's recorded interval, if it has one.
+    pub fn revisit_interval(&self, ip: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT revisit_secs FROM hosts WHERE ip = ?1",
+                params![ip],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// How many hosts sit at each revisit interval, longest first — what
+    /// `crusade coverage` reports so the schedule can be seen.
+    pub fn revisit_histogram(&self) -> Result<Vec<(Option<i64>, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT revisit_secs, COUNT(*) FROM hosts
+             GROUP BY revisit_secs ORDER BY revisit_secs DESC NULLS LAST",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// Host IPs not scanned since `cutoff` (unix seconds), oldest first — the
-    /// rescan queue for `crusade monitor`.
+    /// rescan queue for `crusade monitor --no-adaptive`.
     pub fn stale_host_ips(&self, cutoff: i64, limit: usize) -> Result<Vec<String>> {
         let mut stmt = self
             .conn

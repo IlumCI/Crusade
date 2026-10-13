@@ -139,6 +139,10 @@ enum Command {
         /// Permit private/loopback ranges (for a local test rig).
         #[arg(long)]
         allow_private: bool,
+        /// Revisit every host on the same `--stale` interval instead of the
+        /// per-host interval each one earns from whether it keeps changing.
+        #[arg(long)]
+        no_adaptive: bool,
     },
     /// Export matching hosts as JSON Lines (one Host per line) to stdout or a file.
     Export {
@@ -228,8 +232,18 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Print the generated GBNF grammar for the query language and stop.
+        /// With --model, the grammar the model is actually constrained to.
         #[arg(long)]
         grammar: bool,
+        /// Translate with the local query model (built with `--features llm`,
+        /// model at `<data dir>/models/query-model.gguf`) instead of the cue
+        /// translator. Slower, and better on paraphrases the cues miss.
+        #[arg(long)]
+        model: bool,
+        /// Sample the model this many times and report agreement. 1 is
+        /// greedy. See the engine's docs on why voting is not a cure.
+        #[arg(long, default_value_t = 1)]
+        samples: usize,
     },
     /// Show which CPE a product name resolves to, and on what evidence.
     /// Reads the CVE cache only; sends nothing.
@@ -415,6 +429,7 @@ async fn main() -> Result<()> {
             tiers,
             background,
             allow_private,
+            no_adaptive,
         } => {
             cmd_monitor(
                 &cfg,
@@ -426,6 +441,7 @@ async fn main() -> Result<()> {
                     tiers,
                     background,
                     allow_private,
+                    adaptive: !no_adaptive,
                 },
             )
             .await
@@ -491,7 +507,19 @@ async fn main() -> Result<()> {
             run,
             limit,
             grammar,
-        } => cmd_ask(&cfg, &question.join(" "), run, limit, grammar),
+            model,
+            samples,
+        } => cmd_ask(
+            &cfg,
+            &question.join(" "),
+            AskOpts {
+                run,
+                limit,
+                grammar,
+                model,
+                samples,
+            },
+        ),
     }
 }
 
@@ -1066,6 +1094,7 @@ struct MonitorOpts {
     tiers: bool,
     background: usize,
     allow_private: bool,
+    adaptive: bool,
 }
 
 async fn cmd_monitor(cfg: &Config, opts: MonitorOpts) -> Result<()> {
@@ -1077,6 +1106,7 @@ async fn cmd_monitor(cfg: &Config, opts: MonitorOpts) -> Result<()> {
         tiers,
         background,
         allow_private,
+        adaptive,
     } = opts;
     let datasets = Arc::new(pipeline::Datasets::load(cfg)?);
     let tcp_ports = cfg.scan.default_ports.clone();
@@ -1099,15 +1129,30 @@ async fn cmd_monitor(cfg: &Config, opts: MonitorOpts) -> Result<()> {
     }
     loop {
         let bl = load_blocklist(cfg, allow_private)?;
-        let cutoff = time::OffsetDateTime::now_utc().unix_timestamp() - stale as i64;
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let cutoff = now - stale as i64;
         let stale_ips = {
             let store = Store::open(&cfg.database.path)?;
-            store.stale_host_ips(cutoff, batch)?
+            if adaptive {
+                // Each host carries its own interval, earned from whether it
+                // keeps changing (see `crusade_core::revisit`). `--stale` is
+                // then only the starting point for a host with no history.
+                store.due_host_ips(now, stale as i64, batch)?
+            } else {
+                store.stale_host_ips(cutoff, batch)?
+            }
         };
         if stale_ips.is_empty() {
-            eprintln!("monitor: nothing stale (older than {stale}s).");
+            eprintln!(
+                "monitor: nothing due{}.",
+                if adaptive {
+                    String::new()
+                } else {
+                    format!(" (older than {stale}s)")
+                }
+            );
         } else {
-            eprintln!("monitor: rescanning {} stale host(s)…", stale_ips.len());
+            eprintln!("monitor: rescanning {} due host(s)…", stale_ips.len());
         }
 
         for ip_str in stale_ips {
@@ -1191,7 +1236,28 @@ async fn cmd_monitor(cfg: &Config, opts: MonitorOpts) -> Result<()> {
             )
             .await?;
             if let Some(after) = hosts.into_iter().next() {
+                let changed = host_changed(before.as_ref(), &after);
                 record_changes(&store, before.as_ref(), &after)?;
+                if adaptive {
+                    // What the host did outranks what its address suggests,
+                    // so the class only supplies the starting interval.
+                    let class = crusade_core::revisit::classify(
+                        after.asn,
+                        after.hostnames.first().map(|h| h.as_str()),
+                    );
+                    let current = store
+                        .revisit_interval(&ip_str)?
+                        .map(|s| std::time::Duration::from_secs(s.max(0) as u64));
+                    let next = crusade_core::revisit::next_interval(class, current, changed);
+                    store.set_revisit_interval(&ip_str, next.as_secs() as i64)?;
+                    if changed {
+                        eprintln!(
+                            "monitor: {ip_str} changed; next visit in {}h ({})",
+                            next.as_secs() / 3600,
+                            class.as_str()
+                        );
+                    }
+                }
             }
 
             // Advance the walk only after the probes actually went out, so an
@@ -1221,6 +1287,41 @@ async fn cmd_monitor(cfg: &Config, opts: MonitorOpts) -> Result<()> {
         eprintln!("monitor: sleeping {interval}s…");
         tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
     }
+}
+
+/// Whether a rescan found this host different from how it was recorded.
+///
+/// Compared on what an operator would call a change — which ports answer,
+/// what they claim to be, and the identifiers they present — rather than on
+/// the whole record, because `observed_at` moves on every scan and a revisit
+/// schedule driven by that would never back off at all.
+fn host_changed(before: Option<&crusade_core::Host>, after: &crusade_core::Host) -> bool {
+    let Some(before) = before else {
+        return true;
+    };
+    let shape = |h: &crusade_core::Host| -> Vec<String> {
+        let mut out: Vec<String> = h
+            .services
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}/{:?}|{}|{}|{}|{}",
+                    s.port,
+                    s.transport,
+                    s.product.as_deref().unwrap_or(""),
+                    s.version.as_deref().unwrap_or(""),
+                    s.banner.as_deref().unwrap_or(""),
+                    s.tls
+                        .as_ref()
+                        .and_then(|t| t.fingerprint_sha256.as_deref())
+                        .unwrap_or(""),
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    shape(before) != shape(after)
 }
 
 /// Record an alert for each newly-appeared port, CVE, or exposure on a host.
@@ -1404,58 +1505,164 @@ fn cmd_similar(
 /// only on request. That is deliberate: a translator that silently runs its
 /// own guess teaches nobody what the query language can do, and a wrong guess
 /// then looks like an empty index rather than a mistranslation.
-fn cmd_ask(cfg: &Config, question: &str, run: bool, limit: usize, grammar: bool) -> Result<()> {
-    if grammar {
+/// What `crusade ask` was asked to do.
+struct AskOpts {
+    run: bool,
+    limit: usize,
+    grammar: bool,
+    model: bool,
+    samples: usize,
+}
+
+/// The vocabulary of free-text values this index actually holds.
+///
+/// Both engines need it, for the same reason: a bare word is only a product
+/// name because this index has seen it, and a generated filter should only be
+/// able to name a value that exists. Reading it from the facets means the
+/// vocabulary is the data's, not a list in the source that would be endless
+/// and stale.
+fn index_vocab(store: &Store) -> crusade_core::grammar::IndexVocab {
+    use crusade_core::grammar::{IndexVocab, MAX_VOCAB_ALTERNATIVES};
+    let mut values: Vec<(crusade_core::Field, Vec<String>)> = Vec::new();
+    if let Ok(facets) = store.facets(MAX_VOCAB_ALTERNATIVES) {
+        let products: Vec<String> = facets.products.into_iter().map(|f| f.value).collect();
+        if !products.is_empty() {
+            values.push((crusade_core::Field::Product, products));
+        }
+        let tags: Vec<String> = facets.tags.into_iter().map(|f| f.value).collect();
+        if !tags.is_empty() {
+            values.push((crusade_core::Field::Tag, tags));
+        }
+    }
+    IndexVocab { values }
+}
+
+/// Product names, and the words inside them, for the cue translator.
+fn product_words(vocab: &crusade_core::grammar::IndexVocab) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (field, values) in &vocab.values {
+        if *field != crusade_core::Field::Product {
+            continue;
+        }
+        for value in values {
+            for word in value.split_whitespace() {
+                let w = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+                if w.len() >= 3 {
+                    let w = w.to_ascii_lowercase();
+                    if !out.contains(&w) {
+                        out.push(w);
+                    }
+                }
+            }
+            out.push(value.clone());
+        }
+    }
+    out
+}
+
+fn cmd_ask(cfg: &Config, question: &str, opts: AskOpts) -> Result<()> {
+    if opts.grammar && !opts.model {
         print!("{}", crusade_core::grammar::gbnf(&[]));
         return Ok(());
     }
-    if question.trim().is_empty() {
+    if question.trim().is_empty() && !opts.grammar {
         println!("Ask something, e.g. `crusade ask \"unauthenticated redis in germany\"`.");
         return Ok(());
     }
     let store = Store::open(&cfg.database.path)?;
+    let vocab = index_vocab(&store);
 
-    // What the index knows is what the translator can recognise: a bare
-    // product name is only a product because this index has seen it.
-    let mut products: Vec<String> = Vec::new();
-    if let Ok(facets) = store.facets(200) {
-        for f in facets.products {
-            for word in f.value.split_whitespace() {
-                let w = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-                if w.len() >= 3 {
-                    let w = w.to_ascii_lowercase();
-                    if !products.contains(&w) {
-                        products.push(w);
-                    }
-                }
-            }
-            products.push(f.value);
+    if opts.grammar {
+        print!("{}", crusade_core::grammar::gbnf_for_index(&vocab, true));
+        return Ok(());
+    }
+
+    let query = if opts.model {
+        match ask_model(cfg, question, &vocab, opts.samples)? {
+            Some(q) => q,
+            None => return Ok(()),
         }
-    }
+    } else {
+        let t = crusade_core::nlq::translate_with(question, &product_words(&vocab));
+        println!("{}", t.query);
+        for line in &t.because {
+            println!("  {line}");
+        }
+        if !t.residual.is_empty() {
+            println!(
+                "  free text (matched against banners): {}",
+                t.residual.join(" ")
+            );
+        }
+        if !t.is_structured() {
+            println!(
+                "\n  Nothing in that named a filter, so it is a full-text search. \
+                 `crusade ask --grammar` lists the fields."
+            );
+        }
+        t.query
+    };
 
-    let t = crusade_core::nlq::translate_with(question, &products);
-    println!("{}", t.query);
-    for line in &t.because {
-        println!("  {line}");
-    }
-    if !t.residual.is_empty() {
-        println!(
-            "  free text (matched against banners): {}",
-            t.residual.join(" ")
-        );
-    }
-    if !t.is_structured() {
-        println!(
-            "\n  Nothing in that named a filter, so it is a full-text search. \
-             `crusade ask --grammar` lists the fields."
-        );
-    }
-    if run {
+    if opts.run {
         println!();
-        return cmd_search(cfg, &t.query.to_string(), limit, false);
+        return cmd_search(cfg, &query.to_string(), opts.limit, false);
     }
-    println!("\n  Run it with: crusade search '{}'", t.query);
+    println!("\n  Run it with: crusade search '{query}'");
     Ok(())
+}
+
+/// Translate with the local model, when the binary was built with it.
+#[cfg(feature = "llm")]
+fn ask_model(
+    cfg: &Config,
+    question: &str,
+    vocab: &crusade_core::grammar::IndexVocab,
+    samples: usize,
+) -> Result<Option<crusade_core::Query>> {
+    let path = cfg.data.dir.join("models").join(crusade_llm::MODEL_FILE);
+    anyhow::ensure!(
+        path.exists(),
+        "no query model at {}; put a GGUF instruct model there \
+         (Qwen2.5-1.5B-Instruct Q4_K_M was what this was measured with)",
+        path.display()
+    );
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get() as i32)
+        .unwrap_or(4);
+    let started = std::time::Instant::now();
+    let model = crusade_llm::QueryModel::load(&path, threads)?;
+    let candidates = model.translate(question, vocab, samples, 0.8)?;
+    let Some(best) = candidates.first() else {
+        println!("The model produced no query with any filter in it.");
+        return Ok(None);
+    };
+    println!("{}", best.query);
+    println!(
+        "  model: {:.1}s, {} of {samples} sample(s) agreed",
+        started.elapsed().as_secs_f64(),
+        best.votes
+    );
+    for other in candidates.iter().skip(1) {
+        println!(
+            "  also considered: {} ({} vote(s))",
+            other.query, other.votes
+        );
+    }
+    Ok(Some(best.query.clone()))
+}
+
+#[cfg(not(feature = "llm"))]
+fn ask_model(
+    _cfg: &Config,
+    _question: &str,
+    _vocab: &crusade_core::grammar::IndexVocab,
+    _samples: usize,
+) -> Result<Option<crusade_core::Query>> {
+    anyhow::bail!(
+        "this build has no query model; rebuild with `cargo build --features llm`. \
+         Without it `crusade ask` uses the cue translator, which is the baseline \
+         the model is measured against."
+    )
 }
 
 /// Show what a product name resolves to.
@@ -1773,6 +1980,25 @@ fn cmd_coverage(cfg: &Config, ip: Option<String>, background: usize) -> Result<(
     );
     if started == 0 {
         println!("Run `crusade monitor --tiers` to begin background coverage.");
+    }
+
+    // The revisit schedule. Worth showing next to coverage because the two
+    // answer opposite halves of the same question: how much of each host has
+    // been looked at, and how often it is looked at again.
+    let hist = store.revisit_histogram()?;
+    let earned: i64 = hist
+        .iter()
+        .filter(|(secs, _)| secs.is_some())
+        .map(|(_, n)| *n)
+        .sum();
+    if earned > 0 {
+        println!("\nrevisit intervals ({earned} host(s) have earned one):");
+        for (secs, n) in hist {
+            match secs {
+                Some(s) => println!("  {:>5}h  {n} host(s)", s / 3600),
+                None => println!("  (new)   {n} host(s) on the --stale default"),
+            }
+        }
     }
     Ok(())
 }

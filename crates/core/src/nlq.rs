@@ -442,6 +442,19 @@ const NOISE: &[&str] = &[
     "stuff",
 ];
 
+/// Split a question into the words the translator compares against.
+///
+/// Public because other engines have to agree on what "a word of the
+/// question" means: the model engine checks a generated value against this
+/// same tokenisation before trusting it.
+pub fn tokens(text: &str) -> Vec<String> {
+    text.to_ascii_lowercase()
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/' | ':')))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_string())
+        .collect()
+}
+
 /// Translate a question into a query.
 pub fn translate(question: &str) -> Translation {
     translate_with(question, &[])

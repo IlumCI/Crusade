@@ -28,6 +28,12 @@ bind = "127.0.0.1:8088"
 dir = "data"
 nmap_probes = "/usr/share/nmap/nmap-service-probes"
 
+# `crusade monitor` gives each host its own revisit interval, earned from
+# whether it keeps changing, starting from what its network looks like (cloud,
+# access network, or stable). `--stale` then only sets the starting point for a
+# host with no history; `--no-adaptive` goes back to one interval for all.
+# `crusade coverage` shows the resulting schedule.
+
 [vuln]
 # When a product name matches no CVE rule literally, resolve it to a CPE that
 # NVD actually uses (`Apache httpd` -> `apache:http_server`). Candidates are

@@ -206,6 +206,50 @@ Published work here is industry rather than peer-reviewed, so this stays at
 the explainable baseline my survey recommended; anything learned belongs on
 top of it.
 
+## How often to come back
+
+One revisit interval for the whole index is wrong in both directions at once.
+A cloud instance can be a different machine by tomorrow, so a weekly revisit
+records fiction. A colocated mail server has looked the same for three years,
+so a daily revisit spends bandwidth to learn nothing.
+
+```
+crusade monitor                   # per-host intervals, earned
+crusade monitor --no-adaptive     # one --stale interval for everything
+crusade coverage                  # the resulting schedule
+```
+
+Each host carries its own interval, from two inputs in order of authority.
+What the host *did* comes first: whether the last scan found it changed is
+direct evidence about this host, and it beats any inference from its address.
+What kind of network it sits in supplies the starting interval, because until
+there is history there is nothing else to go on — a known cloud ASN, or the
+naming conventions access providers use in generated PTR records (`dsl-…`,
+`pool-…`, `cpe-…`), with the marker required to be a whole DNS label or
+bounded inside one, so `research` is not read as `res`. Richter et al. (IMC
+2016) and Padmanabhan et al. (IMC 2016, CoNEXT 2020) are the measurements
+behind treating the class as a prior on churn.
+
+The adaptation is deliberately asymmetric. Backing off is slow — one step of
+1.5x per unchanged scan, from six hours up to three weeks — because a host
+quiet for a month may still change tomorrow. Coming back is immediate: one
+step straight to the floor, because the moment a host is seen changing, every
+other record about it is a guess about a machine that has moved. Treating both
+directions the same would mean either trusting stale records for days after a
+change or never saving any bandwidth at all.
+
+The queue is ordered by how far past due a host is *relative* to its own
+interval, not by absolute age. A cloud host six hours late on a six-hour
+interval has more likely changed than a colocated one six hours late on three
+weeks — and sorting by last-seen alone always serves the second first, which is
+exactly how a single interval spends its budget on the hosts least likely to
+have moved.
+
+"Changed" is judged on what an operator would call a change: which ports
+answer, what they claim to be, and the identifiers they present. Not the whole
+record — `observed_at` moves on every scan, and a schedule driven by that would
+never back off at all.
+
 ## Honeypots that generate their banners
 
 The rule pack catches a honeypot that ships a default banner. It cannot catch

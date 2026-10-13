@@ -9,6 +9,7 @@ members = [
     "crates/vuln",
     "crates/web",
     "crates/embed",
+    "crates/llm",
 ]
 
 [workspace.package]
@@ -43,6 +44,7 @@ crusade-enrich = { path = "crates/enrich" }
 crusade-vuln = { path = "crates/vuln" }
 crusade-web = { path = "crates/web" }
 crusade-embed = { path = "crates/embed" }
+crusade-llm = { path = "crates/llm" }
 
 [package]
 name = "crusade"
@@ -55,6 +57,11 @@ authors.workspace = true
 name = "crusade"
 path = "src/main.rs"
 
+[features]
+# Grammar-constrained local query generation. Off by default: it builds
+# llama.cpp from source, which takes minutes, and needs a GGUF model on disk.
+llm = ["crusade-llm/llm"]
+
 [dependencies]
 crusade-core.workspace = true
 crusade-store.workspace = true
@@ -64,6 +71,7 @@ crusade-enrich.workspace = true
 crusade-vuln.workspace = true
 crusade-web.workspace = true
 crusade-embed.workspace = true
+crusade-llm.workspace = true
 tokio.workspace = true
 clap.workspace = true
 anyhow.workspace = true

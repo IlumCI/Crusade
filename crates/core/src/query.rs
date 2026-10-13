@@ -77,6 +77,18 @@ pub enum Field {
     ScreenshotHash,
 }
 
+/// The ICS/OT protocols Crusade identifies, and therefore the only values
+/// `ics:` can take.
+///
+/// A closed set rather than free text for two reasons. It makes the language
+/// honest — `ics:foo` is a mistake, and saying so beats matching nothing — and
+/// it closes a hole that only shows up when a language model writes the query:
+/// given a free-text field, a small model will put the subject of the sentence
+/// in it (`ics:boxes`, `ics:databases`, measured with Qwen2.5-1.5B) because
+/// that is syntactically valid. A test in `crusade-probe` asserts every
+/// protocol the prober emits appears here.
+pub const ICS_PROTOCOLS: &[&str] = &["bacnet", "dnp3", "ethernetip", "modbus", "s7"];
+
 /// What values a field accepts.
 ///
 /// This exists so the things that need to know a field's shape — the GBNF
@@ -148,6 +160,7 @@ impl Field {
             Field::Honeypot => ValueKind::BoolOrScore,
             Field::Transport => ValueKind::Enum(&["tcp", "udp"]),
             Field::Auth => ValueKind::Enum(&["open", "required", "unknown"]),
+            Field::Ics => ValueKind::Enum(ICS_PROTOCOLS),
             Field::Before | Field::After => ValueKind::Date,
             Field::Net => ValueKind::Cidr,
             Field::Country => ValueKind::Country,
@@ -401,6 +414,18 @@ fn parse_value(field: Field, raw: &str) -> Result<FilterValue, ParseError> {
                 allowed: "tcp, udp",
             }),
         },
+        Field::Ics => {
+            let v = raw.to_ascii_lowercase();
+            if ICS_PROTOCOLS.contains(&v.as_str()) {
+                Ok(FilterValue::Text(v))
+            } else {
+                Err(ParseError::BadEnum {
+                    field: field.as_str(),
+                    value: raw.to_string(),
+                    allowed: "bacnet, dnp3, ethernetip, modbus, s7",
+                })
+            }
+        }
         Field::Before | Field::After => parse_date(field, raw).map(FilterValue::Timestamp),
         Field::Country => Ok(FilterValue::Text(raw.to_ascii_uppercase())),
         _ => Ok(FilterValue::Text(raw.to_string())),
