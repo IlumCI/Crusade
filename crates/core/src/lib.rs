@@ -4,9 +4,11 @@
 //! be unit-tested in isolation and reused by every other crate.
 
 pub mod anomaly;
+pub mod grammar;
 pub mod graph;
 pub mod lifecycle;
 pub mod model;
+pub mod nlq;
 pub mod ports;
 pub mod query;
 pub mod schedule;

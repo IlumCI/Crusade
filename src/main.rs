@@ -216,6 +216,21 @@ enum Command {
         /// Optional query; empty = whole index.
         query: Vec<String>,
     },
+    /// Turn a question into a Crusade query. Prints the query and why; runs
+    /// it only when asked.
+    Ask {
+        /// The question, e.g. "unauthenticated redis in the netherlands".
+        question: Vec<String>,
+        /// Run the query and show the results.
+        #[arg(long)]
+        run: bool,
+        /// Results to show with --run.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Print the generated GBNF grammar for the query language and stop.
+        #[arg(long)]
+        grammar: bool,
+    },
     /// Show which CPE a product name resolves to, and on what evidence.
     /// Reads the CVE cache only; sends nothing.
     Resolve {
@@ -471,6 +486,12 @@ async fn main() -> Result<()> {
         } => cmd_similar(&cfg, &text.join(" "), like, filter, limit, json),
         Command::Embed { query } => cmd_embed(&cfg, &query.join(" ")),
         Command::Resolve { name, top } => cmd_resolve(&cfg, &name.join(" "), top),
+        Command::Ask {
+            question,
+            run,
+            limit,
+            grammar,
+        } => cmd_ask(&cfg, &question.join(" "), run, limit, grammar),
     }
 }
 
@@ -1374,6 +1395,66 @@ fn cmd_similar(
             text
         );
     }
+    Ok(())
+}
+
+/// Translate a question into a query.
+///
+/// The query is printed, with the words that produced each filter, and run
+/// only on request. That is deliberate: a translator that silently runs its
+/// own guess teaches nobody what the query language can do, and a wrong guess
+/// then looks like an empty index rather than a mistranslation.
+fn cmd_ask(cfg: &Config, question: &str, run: bool, limit: usize, grammar: bool) -> Result<()> {
+    if grammar {
+        print!("{}", crusade_core::grammar::gbnf(&[]));
+        return Ok(());
+    }
+    if question.trim().is_empty() {
+        println!("Ask something, e.g. `crusade ask \"unauthenticated redis in germany\"`.");
+        return Ok(());
+    }
+    let store = Store::open(&cfg.database.path)?;
+
+    // What the index knows is what the translator can recognise: a bare
+    // product name is only a product because this index has seen it.
+    let mut products: Vec<String> = Vec::new();
+    if let Ok(facets) = store.facets(200) {
+        for f in facets.products {
+            for word in f.value.split_whitespace() {
+                let w = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+                if w.len() >= 3 {
+                    let w = w.to_ascii_lowercase();
+                    if !products.contains(&w) {
+                        products.push(w);
+                    }
+                }
+            }
+            products.push(f.value);
+        }
+    }
+
+    let t = crusade_core::nlq::translate_with(question, &products);
+    println!("{}", t.query);
+    for line in &t.because {
+        println!("  {line}");
+    }
+    if !t.residual.is_empty() {
+        println!(
+            "  free text (matched against banners): {}",
+            t.residual.join(" ")
+        );
+    }
+    if !t.is_structured() {
+        println!(
+            "\n  Nothing in that named a filter, so it is a full-text search. \
+             `crusade ask --grammar` lists the fields."
+        );
+    }
+    if run {
+        println!();
+        return cmd_search(cfg, &t.query.to_string(), limit, false);
+    }
+    println!("\n  Run it with: crusade search '{}'", t.query);
     Ok(())
 }
 

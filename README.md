@@ -206,6 +206,49 @@ Published work here is industry rather than peer-reviewed, so this stays at
 the explainable baseline my survey recommended; anything learned belongs on
 top of it.
 
+## Asking in English
+
+```
+crusade ask "unauthenticated redis in the netherlands"
+#   auth:open country:NL port:6379
+#     "unauthenticated" -> auth:open
+#     "netherlands"     -> country:NL
+#     "redis"           -> port:6379
+crusade ask "vulnerable modbus in italy" --run
+crusade ask --grammar        # the query language as GBNF
+```
+
+The query is printed with the words that produced each filter, and runs only
+when asked. That is deliberate: a translator that silently runs its own guess
+teaches nobody what the query language can do, and a wrong guess then looks
+like an empty index rather than a mistranslation.
+
+Two pieces make this work. The first is a GBNF grammar **generated** from the
+`Field` enum and its value kinds, not written by hand — a hand-written grammar
+is a second copy of the query language that stops matching the first one the
+next time a field is added, and the failure is invisible because a stale
+grammar still emits syntactically valid output over the wrong language. A test
+asserts the grammar covers every field the parser knows, and that every key it
+offers round-trips through the parser.
+
+The second is the translator itself, which is cue phrases rather than a model:
+a span that unambiguously names a filter becomes that filter, and the rest
+becomes free text, which is searched against banners and so still does
+something useful. Three choices in it are worth naming. A service word means
+its port (`ssh servers` is `port:22`, since the *product* is OpenSSH or
+Dropbear), but an explicit port in the question wins outright. Country names
+map to ISO codes from a short list of unambiguous ones, because a wrong code
+produces a confidently empty result. And a bare product name is only
+recognised because the index has seen it — `crusade ask` reads the product
+facet and passes it in, so the translator learns the vocabulary of the data it
+is searching instead of carrying a list that would be endless and stale.
+
+It scores 19 of 20 exact on the benchmark in `crusade_core::nlq`; `cargo run
+--example nlq_score` reproduces that, and the one miss needs a populated index
+to supply the product name. The benchmark lives in the crate rather than in a
+test file because a model engine is measured against the same questions, and a
+benchmark that lives inside one engine's tests is not a benchmark.
+
 ## Matching CVEs to software NVD names differently
 
 CVE matching is a join on `cpe:2.3:a:<vendor>:<product>:<version>`, and the

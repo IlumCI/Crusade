@@ -77,6 +77,85 @@ pub enum Field {
     ScreenshotHash,
 }
 
+/// What values a field accepts.
+///
+/// This exists so the things that need to know a field's shape — the GBNF
+/// grammar in [`crate::grammar`], the natural-language translator, the UI —
+/// derive it from one place instead of each keeping its own copy that goes
+/// stale the next time a field is added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueKind {
+    /// A signed integer.
+    Int,
+    /// `true` or `false` (the parser also takes yes/no/1/0).
+    Bool,
+    /// `true`, `false`, or an integer 0-100.
+    BoolOrScore,
+    /// One of a fixed set of words.
+    Enum(&'static [&'static str]),
+    /// `YYYY-MM-DD`.
+    Date,
+    /// A CIDR block.
+    Cidr,
+    /// A two-letter ISO country code.
+    Country,
+    /// Free text, quoted when it contains spaces.
+    Text,
+}
+
+impl Field {
+    /// Every field, so callers that enumerate the language cannot miss one
+    /// added later. A test asserts this covers the parser.
+    pub const ALL: &'static [Field] = &[
+        Field::Port,
+        Field::Country,
+        Field::Asn,
+        Field::Org,
+        Field::Product,
+        Field::Version,
+        Field::Hostname,
+        Field::SslCn,
+        Field::Tag,
+        Field::HasScreenshot,
+        Field::Before,
+        Field::After,
+        Field::Net,
+        Field::City,
+        Field::Transport,
+        Field::Jarm,
+        Field::Favicon,
+        Field::SshHostkey,
+        Field::Hassh,
+        Field::Vuln,
+        Field::HasVuln,
+        Field::Ics,
+        Field::HasIcs,
+        Field::Auth,
+        Field::HasExploit,
+        Field::Honeypot,
+        Field::Ja4ts,
+        Field::Cluster,
+        Field::ScreenshotHash,
+    ];
+
+    /// What this field's values look like.
+    pub fn value_kind(self) -> ValueKind {
+        match self {
+            Field::Port | Field::Asn | Field::Favicon | Field::ScreenshotHash => ValueKind::Int,
+            Field::HasScreenshot | Field::HasVuln | Field::HasIcs | Field::HasExploit => {
+                ValueKind::Bool
+            }
+            Field::Honeypot => ValueKind::BoolOrScore,
+            Field::Transport => ValueKind::Enum(&["tcp", "udp"]),
+            Field::Auth => ValueKind::Enum(&["open", "required", "unknown"]),
+            Field::Before | Field::After => ValueKind::Date,
+            Field::Net => ValueKind::Cidr,
+            Field::Country => ValueKind::Country,
+            _ => ValueKind::Text,
+        }
+    }
+}
+
 impl Field {
     fn parse(key: &str) -> Option<Field> {
         Some(match key.to_ascii_lowercase().as_str() {
@@ -409,6 +488,53 @@ fn tokenize(input: &str) -> Vec<Token> {
 
 #[cfg(test)]
 mod tests {
+    /// `Field::ALL` has to list every variant, because the grammar and the
+    /// translator enumerate the language through it. The exhaustive match
+    /// makes the compiler refuse to let a new variant be forgotten here, and
+    /// the assertion catches it being left out of `ALL`.
+    #[test]
+    fn field_all_lists_every_variant() {
+        use super::Field::*;
+        for f in super::Field::ALL {
+            let same = match f {
+                Port => Port,
+                Country => Country,
+                Asn => Asn,
+                Org => Org,
+                Product => Product,
+                Version => Version,
+                Hostname => Hostname,
+                SslCn => SslCn,
+                Tag => Tag,
+                HasScreenshot => HasScreenshot,
+                Before => Before,
+                After => After,
+                Net => Net,
+                City => City,
+                Transport => Transport,
+                Jarm => Jarm,
+                Favicon => Favicon,
+                SshHostkey => SshHostkey,
+                Hassh => Hassh,
+                Vuln => Vuln,
+                HasVuln => HasVuln,
+                Ics => Ics,
+                HasIcs => HasIcs,
+                Auth => Auth,
+                HasExploit => HasExploit,
+                Honeypot => Honeypot,
+                Ja4ts => Ja4ts,
+                Cluster => Cluster,
+                ScreenshotHash => ScreenshotHash,
+            };
+            assert_eq!(&same, f);
+        }
+        // Every key the parser accepts must name a field in ALL.
+        for f in super::Field::ALL {
+            assert_eq!(super::Field::parse(f.as_str()), Some(*f), "{}", f.as_str());
+        }
+    }
+
     use super::*;
 
     fn f(q: &Query, field: Field) -> &Filter {
