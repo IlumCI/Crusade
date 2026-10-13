@@ -222,6 +222,17 @@ enum Command {
         /// Optional query; empty = whole index.
         query: Vec<String>,
     },
+    /// Group hosts into infrastructure clusters by shared certificates,
+    /// host keys, favicons and fingerprints, then make them searchable with
+    /// `cluster:<id>`. Reads the index only; sends nothing.
+    Cluster {
+        /// Show the largest clusters and stop, without storing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// How many clusters to list.
+        #[arg(long, default_value_t = 15)]
+        top: usize,
+    },
     /// Report how far background port coverage has advanced, and what a host
     /// is scheduled to be probed on next.
     Coverage {
@@ -395,6 +406,7 @@ async fn main() -> Result<()> {
         } => cmd_worker(&cfg, id, once, poll, allow_private).await,
         Command::Jobs { limit } => cmd_jobs(&cfg, limit),
         Command::Archive { dry_run, status } => cmd_archive(&cfg, dry_run, status),
+        Command::Cluster { dry_run, top } => cmd_cluster(&cfg, dry_run, top),
         Command::Coverage { ip, background } => cmd_coverage(&cfg, ip, background),
         Command::Ipv6 {
             seeds,
@@ -1360,6 +1372,73 @@ fn cmd_embed(cfg: &Config, raw: &str) -> Result<()> {
 /// How long a recorded aliasing verdict is reused before being re-probed.
 /// Long, because the answer is stable, but not forever: a network can change.
 const ALIAS_MAX_AGE_SECS: i64 = 90 * 86_400;
+
+/// Build infrastructure clusters from shared identifiers.
+fn cmd_cluster(cfg: &Config, dry_run: bool, top: usize) -> Result<()> {
+    let mut store = Store::open(&cfg.database.path)?;
+    let identifiers = store.link_identifiers()?;
+    if identifiers.is_empty() {
+        println!("No hosts indexed yet.");
+        return Ok(());
+    }
+
+    let mut linker = crusade_core::Linker::new();
+    for (ip, ids) in identifiers {
+        linker.add(ip, ids);
+    }
+    let clusters = linker.clusters();
+    let grouped: usize = clusters.iter().map(|c| c.len()).sum();
+    println!(
+        "{} host(s): {} cluster(s) covering {grouped} host(s)",
+        linker.hosts(),
+        clusters.len()
+    );
+
+    for c in clusters.iter().take(top) {
+        let why: Vec<String> = c
+            .evidence
+            .iter()
+            .take(3)
+            .map(|(id, n)| {
+                let value = if id.value.chars().count() > 40 {
+                    format!("{}…", id.value.chars().take(39).collect::<String>())
+                } else {
+                    id.value.clone()
+                };
+                format!("{}={value} ({n} hosts)", id.kind.as_str())
+            })
+            .collect();
+        println!("  {:<24} {:>5} host(s)  {}", c.id, c.len(), why.join(", "));
+    }
+    if clusters.len() > top {
+        println!("  … and {} more", clusters.len() - top);
+    }
+
+    // Identifiers too common to mean anything are worth seeing: they explain
+    // why hosts an operator expected to be linked are not.
+    let ignored = linker.ignored_as_common();
+    if !ignored.is_empty() {
+        println!(
+            "\nignored {} identifier(s) as too common to imply shared ownership:",
+            ignored.len()
+        );
+        for (id, n) in ignored.iter().take(5) {
+            println!("  {:<12} on {n} host(s): {}", id.kind.as_str(), id.value);
+        }
+    }
+
+    if dry_run {
+        println!("\nNothing was stored.");
+        return Ok(());
+    }
+    let assignments: Vec<(String, String)> = clusters
+        .iter()
+        .flat_map(|c| c.members.iter().map(|m| (m.clone(), c.id.clone())))
+        .collect();
+    store.set_clusters(&assignments)?;
+    println!("\nStored. Search a cluster with `crusade search cluster:<id>`.");
+    Ok(())
+}
 
 /// Report background coverage: how much of the port space each host has been
 /// through, and what comes next.

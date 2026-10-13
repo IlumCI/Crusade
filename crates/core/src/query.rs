@@ -73,6 +73,7 @@ pub enum Field {
     HasExploit,
     Honeypot,
     Ja4ts,
+    Cluster,
 }
 
 impl Field {
@@ -105,6 +106,7 @@ impl Field {
             "has_exploit" | "exploit" => Field::HasExploit,
             "honeypot" | "honeyscore" => Field::Honeypot,
             "ja4ts" | "ja4t" => Field::Ja4ts,
+            "cluster" => Field::Cluster,
             _ => return None,
         })
     }
@@ -138,6 +140,7 @@ impl Field {
             Field::HasExploit => "has_exploit",
             Field::Honeypot => "honeypot",
             Field::Ja4ts => "ja4ts",
+            Field::Cluster => "cluster",
         }
     }
 }

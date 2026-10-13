@@ -266,6 +266,15 @@ fn compile_inner(query: &Query, ordered: bool) -> Compiled {
                     val(&filter.value),
                 );
             }
+            Field::Cluster => {
+                push_host_col(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "cluster = ? COLLATE NOCASE",
+                    val(&filter.value),
+                );
+            }
             Field::Honeypot => {
                 // Unscored hosts count as score 0, so `-honeypot:true` keeps them.
                 let (cond, v) = match filter.value {

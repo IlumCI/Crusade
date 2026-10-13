@@ -692,3 +692,77 @@ fn rescanning_a_host_preserves_its_background_cursor() {
     store.upsert_host(&host).unwrap();
     assert_eq!(store.background_cursor("192.0.2.71").unwrap(), 1200);
 }
+
+#[test]
+fn clustering_reads_identifiers_and_stores_assignments() {
+    use crusade_core::{LinkKind, Linker};
+    let mut store = Store::open_in_memory().unwrap();
+
+    // Two hosts sharing a certificate subject, plus background noise so the
+    // rarity filter has a population to judge against.
+    for i in 0..40u8 {
+        let mut h = host_with(&format!("10.0.0.{i}"), 443, "nginx");
+        h.services[0].jarm = Some(format!("jarm-{i}"));
+        store.upsert_host(&h).unwrap();
+    }
+    for ip in ["192.0.2.1", "192.0.2.2"] {
+        let mut h = host_with(ip, 443, "nginx");
+        h.services[0].tls = Some(crusade_core::model::TlsCert {
+            subject_cn: Some("shared.example.com".into()),
+            issuer_cn: None,
+            san: vec![],
+            not_before: None,
+            not_after: None,
+            self_signed: true,
+            fingerprint_sha256: Some("sha256:aaa".into()),
+            version: None,
+            cipher: None,
+        });
+        store.upsert_host(&h).unwrap();
+    }
+
+    let ids = store.link_identifiers().unwrap();
+    assert_eq!(ids.len(), 42, "one entry per host");
+    let shared: Vec<&(String, Vec<crusade_core::Identifier>)> = ids
+        .iter()
+        .filter(|(ip, _)| ip.starts_with("192.0.2."))
+        .collect();
+    assert_eq!(shared.len(), 2);
+    assert!(shared[0]
+        .1
+        .iter()
+        .any(|i| i.kind == LinkKind::Certificate && i.value == "shared.example.com"));
+
+    let mut linker = Linker::new();
+    for (ip, identifiers) in ids {
+        linker.add(ip, identifiers);
+    }
+    let clusters = linker.clusters();
+    assert_eq!(clusters.len(), 1, "{clusters:?}");
+    assert_eq!(clusters[0].members, vec!["192.0.2.1", "192.0.2.2"]);
+
+    // Persist and search.
+    let assignments: Vec<(String, String)> = clusters
+        .iter()
+        .flat_map(|c| c.members.iter().map(|m| (m.clone(), c.id.clone())))
+        .collect();
+    store.set_clusters(&assignments).unwrap();
+    assert_eq!(
+        store.cluster_members("192.0.2.1").unwrap(),
+        vec!["192.0.2.1", "192.0.2.2"]
+    );
+    let found = store
+        .search(&parse("cluster:192.0.2.1").unwrap(), 10, 0)
+        .unwrap();
+    assert_eq!(found.len(), 2);
+    // Re-clustering replaces rather than accumulating.
+    store.set_clusters(&[]).unwrap();
+    assert!(store.cluster_members("192.0.2.1").unwrap().is_empty());
+    assert_eq!(
+        store
+            .search(&parse("cluster:192.0.2.1").unwrap(), 10, 0)
+            .unwrap()
+            .len(),
+        0
+    );
+}

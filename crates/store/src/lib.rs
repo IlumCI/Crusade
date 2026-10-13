@@ -50,6 +50,10 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_column("hosts", "bg_cursor")? {
         conn.execute_batch("ALTER TABLE hosts ADD COLUMN bg_cursor INTEGER NOT NULL DEFAULT 0")?;
     }
+    if !has_column("hosts", "cluster")? {
+        conn.execute_batch("ALTER TABLE hosts ADD COLUMN cluster TEXT")?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_hosts_cluster ON hosts(cluster)")?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_hosts_accessed ON hosts(last_accessed, last_seen)",
     )?;
@@ -873,6 +877,79 @@ impl Store {
             .conn
             .prepare("SELECT ip FROM hosts WHERE last_seen < ?1 ORDER BY last_seen ASC LIMIT ?2")?;
         let rows = stmt.query_map(params![cutoff, limit as i64], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The identifiers each host presents, for infrastructure clustering.
+    ///
+    /// Read straight from the service columns rather than the stored host
+    /// documents: clustering looks at a handful of fields across the whole
+    /// index, so parsing every host's JSON would dominate the cost.
+    pub fn link_identifiers(&self) -> Result<Vec<(String, Vec<crusade_core::Identifier>)>> {
+        use crusade_core::{Identifier, LinkKind};
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ip, ssl_cn, jarm, favicon_hash, ssh_hostkey, hassh FROM services")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+
+        let mut per_host: std::collections::BTreeMap<String, Vec<Identifier>> = Default::default();
+        for row in rows {
+            let (ip, ssl_cn, jarm, favicon, hostkey, hassh) = row?;
+            let entry = per_host.entry(ip).or_default();
+            // The certificate itself is the strongest link. The services table
+            // keeps the subject name; the full fingerprint lives in the host
+            // document, so the subject stands in for it here and is treated as
+            // certificate-strength only because a subject plus the rarity
+            // filter is already a narrow signal.
+            if let Some(cn) = ssl_cn.filter(|v| !v.is_empty()) {
+                entry.push(Identifier::new(LinkKind::Certificate, cn));
+            }
+            if let Some(key) = hostkey.filter(|v| !v.is_empty()) {
+                entry.push(Identifier::new(LinkKind::SshHostKey, key));
+            }
+            if let Some(hash) = favicon {
+                entry.push(Identifier::new(LinkKind::Favicon, hash.to_string()));
+            }
+            if let Some(j) = jarm.filter(|v| !v.is_empty()) {
+                entry.push(Identifier::new(LinkKind::Jarm, j));
+            }
+            if let Some(h) = hassh.filter(|v| !v.is_empty()) {
+                entry.push(Identifier::new(LinkKind::Hassh, h));
+            }
+        }
+        Ok(per_host.into_iter().collect())
+    }
+
+    /// Replace every stored cluster assignment.
+    pub fn set_clusters(&mut self, assignments: &[(String, String)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("UPDATE hosts SET cluster = NULL", [])?;
+        {
+            let mut stmt = tx.prepare("UPDATE hosts SET cluster = ?2 WHERE ip = ?1")?;
+            for (ip, cluster) in assignments {
+                stmt.execute(params![ip, cluster])?;
+            }
+        }
+        bump_generation(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Hosts in a cluster.
+    pub fn cluster_members(&self, cluster: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ip FROM hosts WHERE cluster = ?1 ORDER BY ip")?;
+        let rows = stmt.query_map(params![cluster], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 

@@ -3,12 +3,14 @@
 //! This crate is deliberately free of I/O and database dependencies so it can
 //! be unit-tested in isolation and reused by every other crate.
 
+pub mod graph;
 pub mod lifecycle;
 pub mod model;
 pub mod ports;
 pub mod query;
 pub mod schedule;
 
+pub use graph::{Cluster, Identifier, LinkKind, Linker};
 pub use model::{
     AuthState, HoneypotAssessment, HoneypotEvidence, Host, HttpInfo, IcsInfo, Service, SshInfo,
     Tag, TlsCert, Transport,

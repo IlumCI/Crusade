@@ -119,7 +119,7 @@ language.
 
 Filters: `port asn org country city net product version hostname ssl.cn
 transport jarm http.favicon.hash ssh.hostkey hassh tag vuln has_vuln
-ics has_ics auth has_exploit has_screenshot honeypot ja4ts before after`; a leading `-` negates; bare/quoted words are
+ics has_ics auth has_exploit has_screenshot honeypot ja4ts cluster before after`; a leading `-` negates; bare/quoted words are
 full-text over banners, titles, technologies and SSH banners. Unknown keys fall
 back to free text. `net:` accepts IPv4/IPv6 CIDRs; `http.favicon.hash:` takes
 the signed mmh3 integer (the Shodan convention) for finding the same deployment.
@@ -139,6 +139,38 @@ speak, and port pairs that almost never co-occur across the index. Scores and
 their evidence appear in `crusade host` and the web UI; hosts at 50% or more
 are tagged `honeypot`. Use `-honeypot:true` to keep honeypots out of exposure
 statistics.
+
+## Infrastructure clustering
+
+Two hosts presenting the same TLS certificate, or the same SSH host key, are
+not coincidentally similar — someone installed the same key material on both.
+Following those links answers the question an analyst actually has: *what else
+belongs to whoever runs this?*
+
+```
+crusade cluster --dry-run     # show the largest clusters, store nothing
+crusade cluster               # store them
+crusade search cluster:<id>
+```
+
+The trap is that a shared identifier only means something if it is **rare**.
+Two hosts sharing a self-signed certificate is a finding; two hosts sharing
+nginx's default favicon is nothing, and treating it as an edge collapses the
+whole index into one useless cluster. So every identifier is weighed by how
+many hosts carry it, and anything on more than 10% of the index (or more than
+1,000 hosts) is discarded before an edge is drawn — the reasoning behind
+inverse document frequency. Ignored identifiers are *reported*, since they
+explain why hosts an operator expected to be linked are not, and they make a
+decent list of default installations.
+
+Links are weighted by what they actually imply: key material (certificate,
+SSH host key) means shared administration; a favicon means shared branding or
+application; JARM and HASSH only mean shared software. Two weak links can
+combine into one that counts. Clusters are connected components over the
+surviving edges, with the evidence that joined them reported strongest-first.
+Published work here is industry rather than peer-reviewed, so this stays at
+the explainable baseline my survey recommended; anything learned belongs on
+top of it.
 
 ## Continuous coverage
 

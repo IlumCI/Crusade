@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     doc         TEXT NOT NULL,  -- full Host JSON
     honeypot    REAL,           -- honeypot score 0..1, NULL = unscored
     last_accessed INTEGER,      -- last surfaced to a user; NULL = never
-    bg_cursor   INTEGER NOT NULL DEFAULT 0  -- background port walk position
+    bg_cursor   INTEGER NOT NULL DEFAULT 0, -- background port walk position
+    cluster     TEXT            -- infrastructure cluster id; see crusade cluster
 );
 CREATE INDEX IF NOT EXISTS idx_hosts_asn     ON hosts(asn);
 CREATE INDEX IF NOT EXISTS idx_hosts_country ON hosts(country);

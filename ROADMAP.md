@@ -76,8 +76,9 @@ automatic cleanup at a size limit), and GPS-style predictive port discovery
 (`--predict`), and an IPv6 discovery pipeline (`crusade ipv6`: seed hygiene,
 dealiasing, nybble-region target generation with feedback), and tiered
 continuous coverage (`monitor --tiers`: hot/cloud/background tiers, with each
-host walking a keyed permutation of the port space). See `docs/FRONTIER.md`
-for what remains.
+host walking a keyed permutation of the port space), QUIC identification,
+zmap 4.4 field ingest (SYN RTT, JA4TS), and rarity-weighted infrastructure
+clustering (`crusade cluster`). See `docs/FRONTIER.md` for what remains.
 
 ## v5 — PLANNED
 Frontier upgrade derived from a 2026 literature survey: tiered + predictive

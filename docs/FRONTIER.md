@@ -92,7 +92,7 @@ records exists (gap), so this is novel ground.
 | M3 | Natural language -> Crusade query | GBNF/Lark grammar of the query language; 0.5-1.5B Q4 GGUF model via `llama-cpp-2`; token masking with `llguidance`; beam 2-4. Output parses by construction. Exposed as `crusade ask "..."` and a UI box. | arXiv:2307.09702, 2305.13971, 2411.15100, 2608.25761 |
 | M4 | Host anomaly / change detection | Host vector (VAE-style over tags, or mean-pooled M2 service embeddings) + scan-to-scan deltas; isolation forest. Feeds `monitor` alerts (`kind = anomaly`). | Sarabi & Liu, IMC'18 |
 | M5 | Screenshot clustering | pHash/dHash (`image_hasher`), Hamming buckets; `screenshot.hash:` filter. | arXiv:1909.00300, 2512.02243 |
-| M6 | Infrastructure graph | Graph over cert / favicon / JARM / HASSH / ASN edges (`petgraph`): connected components + label propagation -> `cluster:` filter; GNN only after a baseline exists. Published work is industry-only (gap). | - |
+| M6 | **Done** (`crates/core/src/graph.rs`, `crusade cluster`, `cluster:`). Infrastructure graph | Graph over cert / favicon / JARM / HASSH / ASN edges (`petgraph`): connected components + label propagation -> `cluster:` filter; GNN only after a baseline exists. Published work is industry-only (gap). | - |
 | M7 | Analyst agent | Local LLM (M3 runtime) that plans multi-step queries over the index and explains pivots. | ArachNet arXiv:2511.10611 |
 
 All models load lazily from `data/models/`, fetched by `update-data`, and every
