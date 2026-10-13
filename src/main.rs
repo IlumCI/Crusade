@@ -241,6 +241,17 @@ enum Command {
         #[arg(long, default_value_t = 15)]
         top: usize,
     },
+    /// Group web services by the look of their landing page, so one default
+    /// install appears once instead of ten thousand times. Reads the index
+    /// only; sends nothing.
+    Screenshots {
+        /// How many template groups to list.
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        /// Show every member of each listed group, not just a sample.
+        #[arg(long)]
+        members: bool,
+    },
     /// Report how far background port coverage has advanced, and what a host
     /// is scheduled to be probed on next.
     Coverage {
@@ -416,6 +427,7 @@ async fn main() -> Result<()> {
         Command::Archive { dry_run, status } => cmd_archive(&cfg, dry_run, status),
         Command::Anomalies { query, top } => cmd_anomalies(&cfg, &query.join(" "), top),
         Command::Cluster { dry_run, top } => cmd_cluster(&cfg, dry_run, top),
+        Command::Screenshots { top, members } => cmd_screenshots(&cfg, top, members),
         Command::Coverage { ip, background } => cmd_coverage(&cfg, ip, background),
         Command::Ipv6 {
             seeds,
@@ -1437,6 +1449,51 @@ fn cmd_anomalies(cfg: &Config, raw: &str, top: usize) -> Result<()> {
 }
 
 /// Build infrastructure clusters from shared identifiers.
+/// Group the indexed screenshots into page templates.
+///
+/// A sweep of the web finds the same few thousand default pages on millions of
+/// hosts. Grouping by perceptual hash turns that into a short list an analyst
+/// can actually read, and makes the long tail — the pages that look like
+/// nothing else — visible.
+fn cmd_screenshots(cfg: &Config, top: usize, show_members: bool) -> Result<()> {
+    let store = Store::open(&cfg.database.path)?;
+    let hashes = store.screenshot_hashes()?;
+    if hashes.is_empty() {
+        println!("No screenshot fingerprints indexed. Scan with --screenshots first.");
+        return Ok(());
+    }
+
+    let by_label: std::collections::HashMap<&str, u64> =
+        hashes.iter().map(|(l, h)| (l.as_str(), *h)).collect();
+    let groups = crusade_enrich::group(&hashes);
+    let unique = groups.iter().filter(|g| g.len() == 1).count();
+    println!(
+        "{} screenshot(s): {} template(s), {unique} page(s) unlike any other",
+        hashes.len(),
+        groups.len()
+    );
+
+    for g in groups.iter().take(top) {
+        let hash = by_label.get(g[0].as_str()).copied().unwrap_or(0);
+        println!("\n  {:016x}  {:>5} page(s)", hash, g.len());
+        let shown = if show_members {
+            g.len()
+        } else {
+            5.min(g.len())
+        };
+        for label in &g[..shown] {
+            println!("    {label}");
+        }
+        if shown < g.len() {
+            println!("    … and {} more", g.len() - shown);
+        }
+    }
+    if groups.len() > top {
+        println!("\n… and {} more template(s)", groups.len() - top);
+    }
+    Ok(())
+}
+
 fn cmd_cluster(cfg: &Config, dry_run: bool, top: usize) -> Result<()> {
     let mut store = Store::open(&cfg.database.path)?;
     let identifiers = store.link_identifiers()?;

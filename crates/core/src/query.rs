@@ -74,6 +74,7 @@ pub enum Field {
     Honeypot,
     Ja4ts,
     Cluster,
+    ScreenshotHash,
 }
 
 impl Field {
@@ -107,6 +108,7 @@ impl Field {
             "honeypot" | "honeyscore" => Field::Honeypot,
             "ja4ts" | "ja4t" => Field::Ja4ts,
             "cluster" => Field::Cluster,
+            "screenshot.hash" | "screenshot_hash" => Field::ScreenshotHash,
             _ => return None,
         })
     }
@@ -141,6 +143,7 @@ impl Field {
             Field::Honeypot => "honeypot",
             Field::Ja4ts => "ja4ts",
             Field::Cluster => "cluster",
+            Field::ScreenshotHash => "screenshot.hash",
         }
     }
 }
@@ -265,7 +268,7 @@ fn parse_value(field: Field, raw: &str) -> Result<FilterValue, ParseError> {
                 field: field.as_str(),
                 value: raw.to_string(),
             }),
-        Field::Favicon => {
+        Field::ScreenshotHash | Field::Favicon => {
             raw.parse::<i64>()
                 .map(FilterValue::Int)
                 .map_err(|_| ParseError::BadNumber {

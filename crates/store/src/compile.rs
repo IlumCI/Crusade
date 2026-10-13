@@ -266,6 +266,15 @@ fn compile_inner(query: &Query, ordered: bool) -> Compiled {
                     val(&filter.value),
                 );
             }
+            Field::ScreenshotHash => {
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "screenshot_phash = ?",
+                    val(&filter.value),
+                );
+            }
             Field::Cluster => {
                 push_host_col(
                     &mut clauses,

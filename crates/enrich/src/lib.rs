@@ -20,6 +20,7 @@
 pub mod ct;
 pub mod dns;
 pub mod geoasn;
+pub mod phash;
 pub mod screenshot;
 
 use crusade_core::Host;
@@ -27,6 +28,7 @@ use crusade_core::Host;
 pub use ct::{crtsh_subdomains, crtsh_url, parse_crtsh_names};
 pub use dns::reverse_dns;
 pub use geoasn::{parse_ip2asn_tsv, AsnInfo, CityInfo, GeoAsnDb, RawRange};
+pub use phash::{distance, group, same_page, screenshot_hash, SAME_PAGE_DISTANCE};
 pub use screenshot::{chrome_screenshot_args, detect_chrome, ChromeScreenshotter};
 
 /// Which enrichment steps to run.

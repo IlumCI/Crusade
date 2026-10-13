@@ -504,6 +504,12 @@ async fn capture_screenshots(
             );
             if std::fs::write(screens_dir.join(&file), &png).is_ok() {
                 svc.screenshot = Some(file);
+                // Fingerprint the capture so the same page can be found on
+                // other hosts. A page too uniform to hash simply gets none.
+                match crusade_enrich::screenshot_hash(&png) {
+                    Ok(hash) => svc.screenshot_phash = Some(hash as i64),
+                    Err(e) => tracing::debug!("no screenshot fingerprint: {e}"),
+                }
             }
         }
     }

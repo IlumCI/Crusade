@@ -144,6 +144,11 @@ pub struct Service {
     /// this service's web UI, when screenshotting is enabled and succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+    /// Perceptual hash of the screenshot (dHash), for finding the same page
+    /// across hosts. `None` when there is no capture, or the page was too
+    /// uniform to fingerprint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot_phash: Option<i64>,
     /// Industrial control system / OT device identification, when the service
     /// speaks an ICS protocol (Modbus, S7, BACnet, DNP3, EtherNet/IP, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -192,6 +197,7 @@ impl Service {
             jarm: None,
             ja4ts: None,
             screenshot: None,
+            screenshot_phash: None,
             ics: None,
             auth: None,
             pending_since: None,

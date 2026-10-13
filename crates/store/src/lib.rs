@@ -43,6 +43,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_column("hosts", "last_accessed")? {
         conn.execute_batch("ALTER TABLE hosts ADD COLUMN last_accessed INTEGER")?;
     }
+    if !has_column("services", "screenshot_phash")? {
+        conn.execute_batch("ALTER TABLE services ADD COLUMN screenshot_phash INTEGER")?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_services_phash ON services(screenshot_phash)",
+    )?;
     if !has_column("services", "ja4ts")? {
         conn.execute_batch("ALTER TABLE services ADD COLUMN ja4ts TEXT")?;
     }
@@ -199,8 +205,8 @@ fn write_host(tx: &rusqlite::Transaction<'_>, host: &Host) -> Result<()> {
                (ip, port, transport, service, product, version, cpe, ssl_cn,
                 jarm, favicon_hash, ssh_hostkey, hassh, tls_version, ics_protocol,
                 auth_state, screenshot, has_screenshot, pending_since, observed_at, banner,
-                content_hash, ja4ts)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                content_hash, ja4ts, screenshot_phash)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
         )?
         .execute(params![
             ip,
@@ -224,7 +230,8 @@ fn write_host(tx: &rusqlite::Transaction<'_>, host: &Host) -> Result<()> {
             svc.observed_at.unix_timestamp(),
             svc.banner,
             content_hash,
-            svc.ja4ts
+            svc.ja4ts,
+            svc.screenshot_phash
         ])?;
         // Append to the timeline only when this observation differs from the
         // last one: an unchanged rescan would otherwise duplicate the whole
@@ -878,6 +885,27 @@ impl Store {
             .prepare("SELECT ip FROM hosts WHERE last_seen < ?1 ORDER BY last_seen ASC LIMIT ?2")?;
         let rows = stmt.query_map(params![cutoff, limit as i64], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Every screenshot fingerprint in the index, as `(ip:port, hash)`.
+    pub fn screenshot_hashes(&self) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ip, port, screenshot_phash FROM services
+             WHERE screenshot_phash IS NOT NULL ORDER BY ip, port",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, u16>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (ip, port, hash) = row?;
+            out.push((format!("{ip}:{port}"), hash as u64));
+        }
+        Ok(out)
     }
 
     /// The identifiers each host presents, for infrastructure clustering.

@@ -16,3 +16,6 @@ ipnet.workspace = true
 hickory-resolver = "0.24"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tempfile = "3"
+# PNG only: screenshots come from headless Chrome, and a full image stack
+# would be a large dependency for one perceptual hash.
+png = "0.18"

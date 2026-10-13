@@ -109,7 +109,7 @@ language.
 | `store` | SQLite persistence, FTS5 search, faceting, query→SQL compiler |
 | `scan`  | Blocklist/rate guardrails, TCP-connect scanner, masscan/zmap ingestion |
 | `probe` | Banner grabbing, nmap-service-probes fingerprinting, TLS/HTTP parsing |
-| `enrich`| GeoIP/ASN, reverse DNS, crt.sh; screenshot seam (v2) |
+| `enrich`| GeoIP/ASN, reverse DNS, crt.sh, embeddings, screenshot perceptual hashing |
 | `vuln`  | CPE→CVE matching (NVD + CISA KEV) and heuristic tags |
 | `web`   | axum + askama read-only UI and JSON API |
 
@@ -205,6 +205,34 @@ surviving edges, with the evidence that joined them reported strongest-first.
 Published work here is industry rather than peer-reviewed, so this stays at
 the explainable baseline my survey recommended; anything learned belongs on
 top of it.
+
+## Screenshot templates
+
+A sweep of the web finds the same default landing page on an enormous number of
+hosts: one router firmware's login form, one appliance's setup wizard. Storing
+them as unrelated screenshots makes the index unreadable, so each capture is
+fingerprinted with a perceptual hash and pages that look alike are grouped.
+
+```
+crusade screenshots                 # largest templates first
+crusade screenshots --members       # every host in each group
+crusade search screenshot.hash:...  # one specific template
+```
+
+The hash is a dHash: the page is reduced to a 9x8 grey grid and each bit
+records whether a cell is brighter than the one to its right. That measures
+*layout* rather than colour, so the same application theme-shifted across
+installations still groups, while a re-render at another resolution does not
+split. Hamming distance 10 or less counts as the same page; VisualPhishNet
+(arXiv:1909.00300) is the reference for treating a page's look as the identity
+of the software behind it.
+
+One trap is worth naming: a blank or still-loading page reduces to a uniform
+grid, hashes to all zeros, and then sits within the distance threshold of every
+sparse page in the index — a single group containing everything. So a capture
+whose grid spans too little brightness is refused a fingerprint rather than
+given a misleading one, and the long tail of pages that resemble nothing else
+is reported, since that is where anything interesting is.
 
 ## Continuous coverage
 
