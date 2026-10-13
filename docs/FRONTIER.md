@@ -22,15 +22,15 @@ unverified.
 
 | # | Change | Basis | Crate |
 |---|--------|-------|-------|
-| D1 | Three-tier port scheduler: hot (~200 top/IANA ports, daily), cloud (~300 ports on cloud ranges), background (N random ports/IP/day, full 65K coverage over months). Background results double as prediction training data. | Censys SIGCOMM'25 | `scan` |
-| D2 | Port prediction after first hit: learn `P(port_j \| port_i, ASN, /16, banner-class)` from co-occurrence counts in SQLite; probe high-probability ports next. No deep learning required; make it online (incremental counts). | GPS, arXiv:2303.00895; IPREDS, CoNEXT'24 | `scan`, `store` |
-| D3 | Protocol-agnostic first exchange: wait for server-first banner, then IANA-expected protocol, then HTTP, then TLS. Discard SYN-ACK-only / respond-on-every-port hosts as artefacts. | LZR, arXiv:2301.04841 | `probe` |
-| D4 | Service lifecycle: live -> pending (one failed scan, retry from a second vantage point) -> evicted after 72 h -> re-queued for 60 days. Store observations as deltas. | Censys SIGCOMM'25 s4.4 | `store`, `main` |
+| D1 | **Done** (`crates/core/src/schedule.rs`, `crusade monitor --tiers`, `crusade coverage`). Three-tier port scheduler: hot (~200 top/IANA ports, daily), cloud (~300 ports on cloud ranges), background (N random ports/IP/day, full 65K coverage over months). Background results double as prediction training data. | Censys SIGCOMM'25 | `scan` |
+| D2 | **Done** (`crates/core/src/ports.rs`, `crusade scan --predict`; 84.8% recall measured on a synthetic population). Port prediction after first hit: learn `P(port_j \| port_i, ASN, /16, banner-class)` from co-occurrence counts in SQLite; probe high-probability ports next. No deep learning required; make it online (incremental counts). | GPS, arXiv:2303.00895; IPREDS, CoNEXT'24 | `scan`, `store` |
+| D3 | **Done** (`crates/probe/src/grab.rs`, `grab_adaptive`). Protocol-agnostic first exchange: wait for server-first banner, then IANA-expected protocol, then HTTP, then TLS. Discard SYN-ACK-only / respond-on-every-port hosts as artefacts. | LZR, arXiv:2301.04841 | `probe` |
+| D4 | **Done** (`crates/core/src/lifecycle.rs`, `[lifecycle]`, scoped rescans). Service lifecycle: live -> pending (one failed scan, retry from a second vantage point) -> evicted after 72 h -> re-queued for 60 days. Store observations as deltas. | Censys SIGCOMM'25 s4.4 | `store`, `main` |
 | D5 | **Done** (`crates/core/src/revisit.rs`, `crusade monitor`, `crusade coverage`): per-host intervals, with the network class (cloud ASN or access-provider PTR conventions) as the starting prior and the host's own observed churn overriding it. Asymmetric: 1.5x back-off per unchanged scan to a 3-week ceiling, one step to a 6-hour floor on any change. The queue is ordered by lateness relative to each host's own interval, not absolute age. | Padmanabhan IMC'16, CoNEXT'20; Richter IMC'16 | `scan` |
-| D6 | IPv6: (a) aliased-prefix detection (16 random addrs, one per nybble branch); keep one representative per aliased prefix instead of dropping it (CDNs); (b) seed hygiene and GFW-injection filtering; (c) pluggable `TargetGenerator` trait, first impl 6Tree/6Gen-style space partitioning with 6Sense-style online feedback (bandit over prefixes/nybble patterns); (d) BGP announcements as seed signal. | Gasser arXiv:1806.01633; Zirngibl IMC'22; 6SEVEN arXiv:2609.08098; 6Sense USENIX Sec'24; arXiv:2508.07506, arXiv:2506.20383 | `scan` |
+| D6 | **Done** (`crates/scan/src/ipv6.rs`, `crusade ipv6`; logic tested, hit rate untested against live IPv6 — no stack here). IPv6: (a) aliased-prefix detection (16 random addrs, one per nybble branch); keep one representative per aliased prefix instead of dropping it (CDNs); (b) seed hygiene and GFW-injection filtering; (c) pluggable `TargetGenerator` trait, first impl 6Tree/6Gen-style space partitioning with 6Sense-style online feedback (bandit over prefixes/nybble patterns); (d) BGP announcements as seed signal. | Gasser arXiv:1806.01633; Zirngibl IMC'22; 6SEVEN arXiv:2609.08098; 6Sense USENIX Sec'24; arXiv:2508.07506, arXiv:2506.20383 | `scan` |
 | D7 | **Trait done, no ML generator** (`crusade_scan::Generator`): the generator is now a trait with the online propose/reward contract 6Sense and 6SEVEN both fit, held as `Box<dyn Generator>` by `crusade ipv6`, with a test that the trait alone drives the pipeline. The ML generators are not implemented: neither 6Vision nor 6Diffusion publishes pretrained weights, so shipping one means training it, and nothing here can measure whether it helped — this container has no IPv6 stack, which is already why the space-partitioning generator's hit rate is documented as untested. A generator whose benefit cannot be measured is a dependency, not a capability. The seam is ready for one. | as cited | `scan` |
-| D8 | QUIC: UDP/443 Initial probe (version negotiation), server-library fingerprint via `quinn`. | QScanner IMC'21; QUIC Hunter PAM'24 | `probe` |
-| D9 | Ingest ZMap 4.4 output fields (SYN RTT, JA4TS on SYN-ACK, multi-port) as cheap middlebox/tarpit signals. | ZMap v4.4.0; *Ten Years of ZMap* arXiv:2406.15585 | `scan` |
+| D8 | **Done** (`crates/probe/src/quic.rs`, forced version negotiation on UDP/443). QUIC: UDP/443 Initial probe (version negotiation), server-library fingerprint via `quinn`. | QScanner IMC'21; QUIC Hunter PAM'24 | `probe` |
+| D9 | **Done** (`crates/scan/src/sweep.rs`, `ja4ts:`). Ingest ZMap 4.4 output fields (SYN RTT, JA4TS on SYN-ACK, multi-port) as cheap middlebox/tarpit signals. | ZMap v4.4.0; *Ten Years of ZMap* arXiv:2406.15585 | `scan` |
 
 Finding from 6SEVEN: seed composition, dealiasing and tabulation move IPv6
 results more than the choice of generator. Build D6(a)(b) before D6(c)/D7.
@@ -50,7 +50,7 @@ Crusade's engine novel in that respect.
 
 | # | Change | Crate |
 |---|--------|-------|
-| V1 | Replace the NVD 1.1 data-feed parser (retired by NVD) with NVD CVE API 2.0 / JSON 2.0 bulk feeds, fetched by `update-data`. Today CVE matching is empty on a fresh install. | `vuln`, `update` |
+| V1 | **Done** (`crates/vuln/src/cve.rs`, `crates/vuln/src/cache.rs`; 319,249 CVEs indexed). Replace the NVD 1.1 data-feed parser (retired by NVD) with NVD CVE API 2.0 / JSON 2.0 bulk feeds, fetched by `update-data`. Today CVE matching is empty on a fresh install. | `vuln`, `update` |
 | V2 | **Done** (`crates/vuln/src/resolve.rs`, `crusade resolve`). Candidates are the `(vendor, product)` pairs the indexed CVE rules name, so a resolved CPE always has CVEs behind it and nothing is ever free-text. Three tiers: exact (with vendor-prefix stripping), IDF-weighted token F1, character trigrams. The embedding tier the plan called for was built, measured against the real 121,603-pair vocabulary, and **removed**: wrong four times in five, for a structural reason — see the module doc. | `vuln` |
 
 ## 3. Honeypot scoring (`honeypot:` filter)
@@ -99,7 +99,7 @@ exists (gap), so the method is the simplest thing that can be checked.
 | # | Capability | Design | Basis |
 |---|-----------|--------|-------|
 | M1 | **Partly done** (`crates/vuln/src/identify.rs`): the name is extracted from the banner's structure and resolved against the 121,603-pair CVE vocabulary, with the fuzzy tier refused and the service tagged `product-from-banner`. The encoder is not built: its benefit over this is untestable without labelled scan data, and `cargo run --release --example resolve_precision` at least measures what exists (84% right product on the exact tier, 57% on lexical, against nmap's own CPE assignments). Banner -> vendor/product | Small encoder (~22M params, int8 ONNX via `ort`, or `candle`); regexes remain authoritative for versions (model F1 drops to ~0.55 on versions). | arXiv:2404.00056 |
-| M2 | Semantic search and clustering | Static embeddings (Model2Vec potion-base-8M, ~30 MB, `model2vec-rs`) on every banner/title at ingest; ANN via `sqlite-vec` or HNSW (`usearch`/`hnsw_rs`). New query form `like:<ip>:<port>` / `similar:"text"`. Optional re-rank tier: EmbeddingGemma 308M int8. | arXiv:2510.24793; arXiv:2509.20354 |
+| M2 | **Done** (`crates/embed`, `crusade similar`/`embed`, web `/similar`). Semantic search and clustering | Static embeddings (Model2Vec potion-base-8M, ~30 MB, `model2vec-rs`) on every banner/title at ingest; ANN via `sqlite-vec` or HNSW (`usearch`/`hnsw_rs`). New query form `like:<ip>:<port>` / `similar:"text"`. Optional re-rank tier: EmbeddingGemma 308M int8. | arXiv:2510.24793; arXiv:2509.20354 |
 | M3 | **Done** (`crates/core/src/grammar.rs`, `crates/core/src/nlq.rs`, `crusade ask`): the GBNF grammar is generated from the `Field` enum so it cannot drift, and a cue-phrase translator is the baseline (19/20 exact on the in-crate benchmark). The grammar-constrained local model (`crates/llm`, `--features llm`, `crusade ask --model`) is measured on the same questions: 7/20 on the cue set against the baseline's 19/20, and 4/8 on paraphrases against the baseline's 0/8. Neither replaces the other, so `ask` runs the cues and falls back to the model where they yield nothing. Self-consistency does not help; the errors are stable. Natural language -> Crusade query | GBNF/Lark grammar of the query language; 0.5-1.5B Q4 GGUF model via `llama-cpp-2`; token masking with `llguidance`; beam 2-4. Output parses by construction. Exposed as `crusade ask "..."` and a UI box. | arXiv:2307.09702, 2305.13971, 2411.15100, 2608.25761 |
 | M4 | **Done** (`crates/core/src/anomaly.rs`, `crusade anomalies`): surprisal over population features rather than a trained model, since it explains itself and needs no training set. Host anomaly / change detection | Host vector (VAE-style over tags, or mean-pooled M2 service embeddings) + scan-to-scan deltas; isolation forest. Feeds `monitor` alerts (`kind = anomaly`). | Sarabi & Liu, IMC'18 |
 | M5 | **Done** (`crates/enrich/src/phash.rs`, `crusade screenshots`, `screenshot.hash:`). Screenshot clustering | dHash (9x8 luma, horizontal gradient) computed at capture, stored per service; Hamming distance <= 10 groups one template. A uniformity guard refuses blank pages, which otherwise all hash to zero and swallow every sparse page. | arXiv:1909.00300, 2512.02243 |
@@ -112,33 +112,48 @@ GeoIP and screenshots today).
 
 ## 5. Ordering
 
-1. V1 (correctness: CVE matching is currently non-functional). **Done.**
-2. Honeypot stage 1 + D2 co-occurrence model (shared statistics; makes the
-   existing `-tag:honeypot` README example real). **Honeypot stage 1 done**
-   (`crates/vuln/src/honeypot.rs`, `honeypot:` filter, `crusade rescore`);
-   the port co-occurrence statistics exist and are used for scoring, not yet
-   for D2 port prediction.
-3. D3, D4, D1 (engine core). **D1 done** (`crates/core/src/schedule.rs`,
-   `monitor --tiers`, `crusade coverage`: hot/cloud/background tiers with a
-   keyed-permutation background walk, resumable from one cursor per host). **D3 done** (`grab::grab_adaptive`); **D4 done**
-   (`crates/core/src/lifecycle.rs`, `[lifecycle]` config, scoped rescans in
-   `monitor`); **stateless SYN engine done** (`crates/scan/src/syn.rs`,
-   `--discovery-syn`, ~83k probes/s measured vs 166 for connect). D1's tiered
-   scheduler still pending; **D2 port prediction done**
-   (`crates/core/src/ports.rs`, `crusade scan --predict`, measured 84.8%
-   recall at ~4,400x less bandwidth than an exhaustive sweep). The data layer's slow
+Every item above is now implemented, or declined with the measurement that
+decided it. What each row says is the record; this section is the short version
+and the places where the answer was "no".
+
+1. **V1** (CVE matching was non-functional). Done.
+2. **Honeypot stage 1** and the **D2** co-occurrence model, which share their
+   statistics. Both done; **stages 2 and 3** followed — response-time signals
+   for model-backed honeypots, and a logistic fit of the behavioural signals
+   against the rule labels on an operator's own index.
+3. **D3, D4, D1** (engine core), plus the stateless SYN engine (~83k probes/s
+   measured against 166 for connect scanning) and **D2** port prediction
+   (84.8% recall at ~4,400x less bandwidth than a sweep). **D5** followed:
+   per-host revisit intervals earned from observed churn. The data layer's slow
    paths are addressed: lazy dataset loading, an indexed on-disk CVE cache,
-   generation-invalidated facet caching and batched writes.
-4. M2 + V2, then M3 (shared embedding/LLM runtime). **M2 done**
-   (`crates/embed`, `crusade similar`/`embed`, web `/similar` + per-service
-   pivots); V2 and M3 pending.
-5. D6 IPv6 pipeline **done** (`crates/scan/src/ipv6.rs`, `crusade ipv6`:
-   seed hygiene, aliased-prefix detection with persistence, nybble-region
-   generation, online feedback — logic tested, untested against live IPv6).
-   **D8 QUIC done** (`crates/probe/src/quic.rs`, forced version negotiation on
-   UDP/443 by default) and **D9 done** (zmap 4.4 SYN RTT summarised, JA4TS
-   stored and pivotable via `ja4ts:`).
-6. Honeypot stages 2-3 **done**; M4-M6 done, M7 remaining.
+   generation-invalidated facet caching, batched writes, tiered auto-archiving.
+4. **M2**, **V2**, **M3**. All done, and two of the three ended somewhere other
+   than the plan: V2's embedding-retrieval tier was built, measured at wrong
+   four times in five, and removed; M3's local model turned out to lose badly
+   to a cue translator on ordinary phrasings and win decisively on paraphrases,
+   so both engines ship and `ask` composes them.
+5. **D6** IPv6 (logic tested, hit rate untested against live IPv6 — no stack
+   here), **D8** QUIC, **D9** zmap 4.4 fields. **D7** is a trait with no ML
+   generator behind it: neither candidate publishes weights, and nothing here
+   can measure whether training one helped.
+6. **M4-M7** done. M1 is partly done without its encoder and M7 without its
+   agent, in both cases because the measurable version was built and the model
+   could not be shown to beat it.
+
+### Where the answer was no
+
+Four things in this plan were built or scoped and then not shipped, each for a
+reason that was measured rather than argued:
+
+| | why not |
+|---|---|
+| CPE resolution by embedding retrieval (V2) | Wrong four times in five against the real 121,603-pair vocabulary. A static embedding of `vendor product` is a mean over a few tokens, so a frequent vendor word dominates and the ranking answers "which pair mentions Microsoft". |
+| A 22M banner encoder (M1) | Its benefit over resolving the banner's own words against the CVE vocabulary cannot be measured without labelled scan data. |
+| An agentic query planner (M7) | The same model class got 7 of 20 ordinary single-query translations right; a planner compounds that over conditioned steps. Counting pivots answers it exactly. |
+| Learned IPv6 generators (D7) | No pretrained weights published, and no IPv6 stack here to measure a trained one against. |
+
+Each is recorded in the module that would have held it, with the numbers, so
+the next person does not have to repeat the experiment to find out.
 
 ## Open gaps in the literature
 
