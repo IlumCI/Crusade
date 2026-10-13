@@ -222,6 +222,14 @@ enum Command {
         /// Optional query; empty = whole index.
         query: Vec<String>,
     },
+    /// List the hosts least like the rest of the index, with the reason for
+    /// each. Reads the index only; sends nothing.
+    Anomalies {
+        /// Optional query to restrict both the population and the candidates.
+        query: Vec<String>,
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+    },
     /// Group hosts into infrastructure clusters by shared certificates,
     /// host keys, favicons and fingerprints, then make them searchable with
     /// `cluster:<id>`. Reads the index only; sends nothing.
@@ -406,6 +414,7 @@ async fn main() -> Result<()> {
         } => cmd_worker(&cfg, id, once, poll, allow_private).await,
         Command::Jobs { limit } => cmd_jobs(&cfg, limit),
         Command::Archive { dry_run, status } => cmd_archive(&cfg, dry_run, status),
+        Command::Anomalies { query, top } => cmd_anomalies(&cfg, &query.join(" "), top),
         Command::Cluster { dry_run, top } => cmd_cluster(&cfg, dry_run, top),
         Command::Coverage { ip, background } => cmd_coverage(&cfg, ip, background),
         Command::Ipv6 {
@@ -1372,6 +1381,60 @@ fn cmd_embed(cfg: &Config, raw: &str) -> Result<()> {
 /// How long a recorded aliasing verdict is reused before being re-probed.
 /// Long, because the answer is stable, but not forever: a network can change.
 const ALIAS_MAX_AGE_SECS: i64 = 90 * 86_400;
+
+/// Rank hosts by how unlike the population they are.
+fn cmd_anomalies(cfg: &Config, raw: &str, top: usize) -> Result<()> {
+    use crusade_core::anomaly::{score, Population};
+    let q = query::parse(raw).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let store = Store::open(&cfg.database.path)?;
+
+    // The population and the candidates are the same set: a host is unusual
+    // relative to the hosts it is being compared with, so scoring against a
+    // different population would answer a different question.
+    let ips = store.matching_ips(&q)?;
+    let mut hosts = Vec::with_capacity(ips.len());
+    for ip in &ips {
+        if let Some(h) = store.get_host(ip)? {
+            hosts.push(h);
+        }
+    }
+    if hosts.is_empty() {
+        println!("No hosts match.");
+        return Ok(());
+    }
+
+    let population = Population::from_hosts(hosts.iter());
+    if !population.is_usable() {
+        println!(
+            "Only {} host(s) to compare against; at least {} are needed before \
+             \"unusual\" means anything.",
+            population.hosts(),
+            crusade_core::anomaly::Population::MIN_HOSTS
+        );
+        return Ok(());
+    }
+
+    let mut scored: Vec<(&crusade_core::Host, crusade_core::Anomaly)> = hosts
+        .iter()
+        .filter_map(|h| score(h, &population).map(|a| (h, a)))
+        .collect();
+    scored.sort_by(|a, b| b.1.score.total_cmp(&a.1.score).then(a.0.ip.cmp(&b.0.ip)));
+
+    println!(
+        "{} host(s), {} distinct feature(s); most unusual first:\n",
+        population.hosts(),
+        population.distinct_features()
+    );
+    for (host, anomaly) in scored.iter().take(top) {
+        println!(
+            "{:<40} {:>7.1} bits  {}",
+            host.ip.to_string(),
+            anomaly.score,
+            anomaly.top_reasons(3).join(", ")
+        );
+    }
+    Ok(())
+}
 
 /// Build infrastructure clusters from shared identifiers.
 fn cmd_cluster(cfg: &Config, dry_run: bool, top: usize) -> Result<()> {

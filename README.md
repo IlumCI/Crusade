@@ -140,6 +140,40 @@ their evidence appear in `crusade host` and the web UI; hosts at 50% or more
 are tagged `honeypot`. Use `-honeypot:true` to keep honeypots out of exposure
 statistics.
 
+## Anomalies
+
+An index of a million hosts is mostly web servers; reading it top to bottom
+tells you nothing. What is worth attention is the host *unlike* its
+population.
+
+```
+crusade anomalies --top 20
+crusade anomalies country:DE          # unusual within German hosts
+```
+
+Hosts are scored by **surprisal**: each feature (a port, a product, a tag, an
+auth posture) occurs in some fraction `p` of the population, so observing it
+carries `-log2(p)` bits. A host built entirely from common parts scores low
+however many parts it has; one genuinely rare feature lifts a host on its own.
+
+Two properties matter more than raw accuracy. The score **decomposes exactly**
+into per-feature contributions, so the output is "unusual because port 102
+appears on 0.3% of hosts" rather than a number from a black box — an
+unexplained anomaly score is not actionable. And it needs **no training**: the
+population is the model, so it works from the first scan and cannot drift from
+the data it describes. Below 50 hosts it declines to score rather than calling
+everything unusual.
+
+Features are deliberately coarse — CVE ids collapse to "has a vuln tag",
+service counts bucket by powers of two — because features that make every host
+unique would score every host as anomalous and say nothing. `anomaly::diff`
+scores *changes* the same way, which is the more alertable signal: an unusual
+host may always have been unusual, but an unusual change just happened.
+
+Sarabi & Liu (IMC 2018) take the learned route, a VAE over binary tags, and
+get compact embeddings — a better basis for clustering. For "show me what is
+weird, and say why", surprisal is cheaper and clearer.
+
 ## Infrastructure clustering
 
 Two hosts presenting the same TLS certificate, or the same SSH host key, are
