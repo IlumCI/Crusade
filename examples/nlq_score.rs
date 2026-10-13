@@ -5,11 +5,20 @@
 //! believed.
 
 fn main() {
-    let (exact, partial, total) =
-        crusade_core::nlq::score(|q| crusade_core::nlq::translate(q).query);
-    println!("cue translator: {exact} exact, {partial} partial, of {total}\n");
+    for (label, set) in [
+        ("cue phrases", crusade_core::nlq::BENCHMARK),
+        ("paraphrases", crusade_core::nlq::BENCHMARK_HARD),
+    ] {
+        let (exact, partial, total) =
+            crusade_core::nlq::score_set(set, |q| crusade_core::nlq::translate(q).query);
+        println!("{label}: {exact} exact, {partial} partial, of {total}");
+        report(set);
+        println!();
+    }
+}
 
-    for (question, expected) in crusade_core::nlq::BENCHMARK {
+fn report(set: &[(&str, &[&str])]) {
+    for (question, expected) in set {
         let t = crusade_core::nlq::translate(question);
         let got = t.query.to_string();
         let want = expected.join(" ");

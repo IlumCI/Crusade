@@ -718,13 +718,64 @@ pub const BENCHMARK: &[(&str, &[&str])] = &[
     ("postgres in south korea", &["port:5432", "country:KR"]),
 ];
 
-/// Score a translator against [`BENCHMARK`].
+/// Questions the cue translator is expected to get wrong.
+///
+/// A benchmark written alongside a cue list measures the cue list against
+/// itself. These are paraphrases nobody would add a cue for — the same
+/// questions a person would actually type, in words the translator has no
+/// entry for — and they are the set a model has to win on to be worth
+/// installing. The cue translator's score here is recorded in its tests as
+/// what it is, not as a target.
+pub const BENCHMARK_HARD: &[(&str, &[&str])] = &[
+    (
+        "boxes in the netherlands nobody needs a password for",
+        &["country:NL", "auth:open"],
+    ),
+    (
+        "which german machines are running something with a known hole in it",
+        &["country:DE", "has_vuln:true"],
+    ),
+    (
+        "web servers that are definitely not traps",
+        &["port:80", "honeypot:false"],
+    ),
+    (
+        "find me factory equipment hanging off the internet in poland",
+        &["has_ics:true", "country:PL"],
+    ),
+    (
+        "databases in france I could log straight into",
+        &["country:FR", "auth:open"],
+    ),
+    (
+        "stuff first seen since the start of the year",
+        &["after:2026-01-01"],
+    ),
+    (
+        "remote desktop anywhere but the united states",
+        &["port:3389", "-country:US"],
+    ),
+    (
+        "mail servers in sweden with a picture of the login page",
+        &["port:25", "country:SE", "has_screenshot:true"],
+    ),
+];
+
+/// Score a translator against a question set.
 ///
 /// Returns `(exact, partial, total)`: exact is every expected filter present
 /// and nothing extra, partial is every expected filter present with extras.
 pub fn score<F: Fn(&str) -> Query>(translate: F) -> (usize, usize, usize) {
+    score_set(BENCHMARK, translate)
+}
+
+/// Score a translator against one of the question sets.
+pub fn score_set<F: Fn(&str) -> Query>(
+    set: &[(&str, &[&str])],
+    translate: F,
+) -> (usize, usize, usize) {
     let (mut exact, mut partial) = (0, 0);
-    for (question, expected) in BENCHMARK {
+    for (question, expected) in set {
         let q = translate(question);
         let got: Vec<String> = q.filters.iter().map(render_filter).collect();
         let all_present = expected
@@ -738,7 +789,7 @@ pub fn score<F: Fn(&str) -> Query>(translate: F) -> (usize, usize, usize) {
             }
         }
     }
-    (exact, partial, BENCHMARK.len())
+    (exact, partial, set.len())
 }
 
 /// `key:value` for one filter, for comparison against the benchmark.
@@ -847,6 +898,21 @@ mod tests {
             t.because.iter().any(|b| b.contains("country:DE")),
             "{:?}",
             t.because
+        );
+    }
+
+    /// The cue translator on the paraphrase set, recorded as a fact rather
+    /// than a target: these are the questions it is expected to miss, and the
+    /// bar a model engine has to clear to be worth installing. If this number
+    /// ever goes *up*, a cue was added that generalises — worth knowing.
+    #[test]
+    fn the_baseline_on_paraphrases_is_what_it_is() {
+        let (exact, partial, total) = score_set(BENCHMARK_HARD, |q| translate(q).query);
+        assert_eq!(total, 8);
+        assert!(
+            exact <= 2,
+            "the cue translator got {exact} exact and {partial} partial of {total} \
+             paraphrases; if cues now cover these, update this test and the README"
         );
     }
 
