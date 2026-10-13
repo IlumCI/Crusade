@@ -257,6 +257,15 @@ fn compile_inner(query: &Query, ordered: bool) -> Compiled {
                     val(&filter.value),
                 );
             }
+            Field::Ja4ts => {
+                push_service_exists(
+                    &mut clauses,
+                    &mut params,
+                    neg,
+                    "ja4ts = ? COLLATE NOCASE",
+                    val(&filter.value),
+                );
+            }
             Field::Honeypot => {
                 // Unscored hosts count as score 0, so `-honeypot:true` keeps them.
                 let (cond, v) = match filter.value {

@@ -72,6 +72,7 @@ pub enum Field {
     /// `has_exploit:` — whether any attached CVE has a known public exploit.
     HasExploit,
     Honeypot,
+    Ja4ts,
 }
 
 impl Field {
@@ -103,6 +104,7 @@ impl Field {
             "auth" => Field::Auth,
             "has_exploit" | "exploit" => Field::HasExploit,
             "honeypot" | "honeyscore" => Field::Honeypot,
+            "ja4ts" | "ja4t" => Field::Ja4ts,
             _ => return None,
         })
     }
@@ -135,6 +137,7 @@ impl Field {
             Field::Auth => "auth",
             Field::HasExploit => "has_exploit",
             Field::Honeypot => "honeypot",
+            Field::Ja4ts => "ja4ts",
         }
     }
 }

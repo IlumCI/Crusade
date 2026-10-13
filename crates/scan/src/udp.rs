@@ -20,7 +20,8 @@ use crate::blocklist::Blocklist;
 /// services that typically answer an unsolicited UDP probe and are frequently
 /// found exposed.
 pub fn default_udp_ports() -> Vec<u16> {
-    vec![53, 123, 137, 161, 500, 1900, 5353]
+    // 443 is QUIC/HTTP-3, which a TCP-only scan would miss entirely.
+    vec![53, 123, 137, 161, 443, 500, 1900, 5353]
 }
 
 /// Build a UDP `(ip, port)` worklist for `ips` × `ports`, with every blocklisted
@@ -52,7 +53,13 @@ mod tests {
     #[test]
     fn default_udp_ports_are_the_common_recon_set() {
         let ports = default_udp_ports();
-        assert_eq!(ports, vec![53, 123, 137, 161, 500, 1900, 5353]);
+        // 443 is QUIC: a host can serve its whole site over HTTP/3 and look
+        // closed to a TCP-only scan, so it belongs in the default sweep.
+        assert_eq!(ports, vec![53, 123, 137, 161, 443, 500, 1900, 5353]);
+        assert!(ports.contains(&443), "QUIC must be probed by default");
+        let mut sorted = ports.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, ports, "kept in ascending order");
     }
 
     #[test]

@@ -74,7 +74,29 @@ fn collect_masscan_record(rec: &serde_json::Value, out: &mut Vec<(IpAddr, u16)>)
 /// column for the address and, if present, a `sport`/`port`/`dport` column for
 /// the port (defaulting to 0 when zmap was not configured to emit one). Rows
 /// whose address does not parse are skipped.
-pub fn parse_zmap_csv(s: &str) -> Vec<(IpAddr, u16)> {
+/// One row of zmap output, with the extra signals zmap 4.4 can emit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZmapRecord {
+    pub ip: IpAddr,
+    pub port: u16,
+    /// Round-trip time of the SYN/SYN-ACK exchange, in microseconds.
+    ///
+    /// zmap 4.4 reports this per probe. It is a cheap distance estimate and a
+    /// middlebox hint: a reply far faster than the rest of a network's hosts
+    /// usually came from something in front of them rather than the host.
+    pub rtt_us: Option<u32>,
+    /// JA4TS: a fingerprint of the SYN-ACK's TCP options, window and flags,
+    /// which identifies the responding *stack* rather than the application.
+    /// Pivotable like JARM and HASSH; present only when zmap was asked for it.
+    pub ja4ts: Option<String>,
+}
+
+/// Parse zmap CSV output into rich records, keeping the fields zmap 4.4 adds.
+///
+/// Columns are located by name from the header, so a file with extra or
+/// reordered columns still parses — zmap's output schema is configurable, and
+/// positional parsing breaks the moment someone adds `--output-fields`.
+pub fn parse_zmap_csv_rich(s: &str) -> Vec<ZmapRecord> {
     let mut out = Vec::new();
     let mut lines = s.lines().filter(|l| !l.trim().is_empty());
 
@@ -88,22 +110,56 @@ pub fn parse_zmap_csv(s: &str) -> Vec<(IpAddr, u16)> {
     let port_idx = cols
         .iter()
         .position(|c| matches!(*c, "sport" | "port" | "dport"));
+    // zmap has used several names for the timing field across versions.
+    let rtt_idx = cols
+        .iter()
+        .position(|c| matches!(*c, "rtt_us" | "rtt" | "syn_rtt_us" | "latency_us"));
+    let ja4ts_idx = cols
+        .iter()
+        .position(|c| matches!(*c, "ja4ts" | "ja4t" | "ja4ts_str"));
+    // A failed probe is still a row; only successes are open ports.
+    let success_idx = cols
+        .iter()
+        .position(|c| matches!(*c, "success" | "classification"));
 
     for line in lines {
         let fields: Vec<&str> = line.split(',').map(|f| f.trim()).collect();
-        let Some(addr) = fields.get(saddr_idx) else {
+        let Some(Ok(ip)) = fields.get(saddr_idx).map(|a| a.parse::<IpAddr>()) else {
             continue;
         };
-        let Ok(ip) = addr.parse::<IpAddr>() else {
-            continue;
-        };
+        if let Some(field) = success_idx.and_then(|i| fields.get(i)) {
+            // "0" and "rst" both mean the port is not open.
+            if matches!(*field, "0" | "false" | "rst" | "icmp_unreach") {
+                continue;
+            }
+        }
         let port = port_idx
             .and_then(|i| fields.get(i))
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(0);
-        out.push((ip, port));
+        let rtt_us = rtt_idx
+            .and_then(|i| fields.get(i))
+            .and_then(|v| v.parse::<u32>().ok());
+        let ja4ts = ja4ts_idx
+            .and_then(|i| fields.get(i))
+            .map(|v| v.to_string())
+            .filter(|v| !v.is_empty() && v != "-");
+        out.push(ZmapRecord {
+            ip,
+            port,
+            rtt_us,
+            ja4ts,
+        });
     }
     out
+}
+
+/// Parse zmap CSV output into `(ip, port)` pairs.
+pub fn parse_zmap_csv(s: &str) -> Vec<(IpAddr, u16)> {
+    parse_zmap_csv_rich(s)
+        .into_iter()
+        .map(|r| (r.ip, r.port))
+        .collect()
 }
 
 /// Drop every pair whose address the blocklist forbids. Callers MUST apply this
@@ -204,5 +260,67 @@ mod tests {
         ];
         let got = filter_blocked(pairs, &bl);
         assert_eq!(got, vec![(v4(1, 1, 1, 1), 443)]);
+    }
+
+    #[test]
+    fn zmap_44_fields_are_parsed_by_name() {
+        // Columns deliberately reordered and interleaved with ones we ignore,
+        // since zmap's schema is configurable.
+        let csv = "\
+timestamp-str,ja4ts,saddr,classification,rtt_us,sport,repeat
+2026-10-13T00:00:00Z,8192_2-4-8-1-3_1460_8,198.51.100.4,synack,14213,443,0
+2026-10-13T00:00:01Z,-,198.51.100.5,synack,982,80,0
+2026-10-13T00:00:02Z,,198.51.100.6,rst,55,22,0
+";
+        let rows = parse_zmap_csv_rich(csv);
+        assert_eq!(rows.len(), 2, "the RST row is not an open port: {rows:?}");
+
+        assert_eq!(rows[0].ip, "198.51.100.4".parse::<IpAddr>().unwrap());
+        assert_eq!(rows[0].port, 443);
+        assert_eq!(rows[0].rtt_us, Some(14_213));
+        assert_eq!(rows[0].ja4ts.as_deref(), Some("8192_2-4-8-1-3_1460_8"));
+
+        // "-" is zmap's empty marker, not a fingerprint.
+        assert_eq!(rows[1].ja4ts, None);
+        assert_eq!(rows[1].rtt_us, Some(982));
+
+        // The simple API still works and ignores the extra fields.
+        assert_eq!(
+            parse_zmap_csv(csv),
+            vec![
+                ("198.51.100.4".parse::<IpAddr>().unwrap(), 443),
+                ("198.51.100.5".parse::<IpAddr>().unwrap(), 80),
+            ]
+        );
+    }
+
+    #[test]
+    fn zmap_output_without_the_new_fields_still_parses() {
+        let csv = "saddr,sport\n203.0.113.1,8080\n";
+        let rows = parse_zmap_csv_rich(csv);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].port, 8080);
+        assert_eq!(rows[0].rtt_us, None);
+        assert_eq!(rows[0].ja4ts, None);
+    }
+
+    #[test]
+    fn zmap_success_column_variants_are_honoured() {
+        let csv = "saddr,sport,success\n198.51.100.1,80,1\n198.51.100.2,80,0\n198.51.100.3,80,true\n198.51.100.4,80,false\n";
+        let kept: Vec<String> = parse_zmap_csv_rich(csv)
+            .into_iter()
+            .map(|r| r.ip.to_string())
+            .collect();
+        assert_eq!(kept, vec!["198.51.100.1", "198.51.100.3"]);
+    }
+
+    #[test]
+    fn zmap_garbage_is_skipped_not_fatal() {
+        assert!(parse_zmap_csv_rich("").is_empty());
+        assert!(parse_zmap_csv_rich("no_saddr_column,x\n1,2\n").is_empty());
+        let csv = "saddr,sport\nnot-an-ip,80\n198.51.100.9,notaport\n";
+        let rows = parse_zmap_csv_rich(csv);
+        assert_eq!(rows.len(), 1, "the bad address is dropped");
+        assert_eq!(rows[0].port, 0, "an unparseable port reads as unknown");
     }
 }

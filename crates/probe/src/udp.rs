@@ -34,6 +34,9 @@ pub async fn probe_udp_service(ip: IpAddr, port: u16, timeout: Duration) -> Opti
         137 => probe_netbios(ip, port, timeout).await,
         161 => probe_snmp(ip, port, timeout).await,
         1900 => probe_ssdp(ip, port, timeout).await,
+        // HTTP/3 lives here. A TCP-only scan misses a host that serves its
+        // whole site over QUIC, so identify it from one datagram.
+        443 | 8443 | 784 => crate::quic::probe_quic(ip, port, timeout).await,
         // UDP ICS/OT identification (BACnet/IP, EtherNet/IP over UDP).
         _ if crate::ics::ics_ports_udp().contains(&port) => {
             crate::ics::probe_ics_service(ip, port, timeout).await

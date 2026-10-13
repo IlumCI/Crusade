@@ -61,7 +61,9 @@ pub use ipv6::{
 };
 pub use rate::{RateLimiter, RateLimiterParams};
 pub use scanner::{ScanConfig, TcpScanner};
-pub use sweep::{filter_blocked, parse_masscan_json, parse_zmap_csv};
+pub use sweep::{
+    filter_blocked, parse_masscan_json, parse_zmap_csv, parse_zmap_csv_rich, ZmapRecord,
+};
 pub use syn::{PortState, Reply, SynConfig, SynScanner};
 pub use targets::{expand_targets, MIN_V6_PREFIX};
 pub use udp::{default_udp_ports, udp_worklist};

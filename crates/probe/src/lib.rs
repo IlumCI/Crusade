@@ -30,6 +30,7 @@ pub mod grab;
 pub mod http;
 pub mod ics;
 pub mod jarm;
+pub mod quic;
 pub mod ssh;
 pub mod tls;
 pub mod udp;
@@ -45,6 +46,7 @@ pub use auth::{classify_http_auth, is_auth_posture_port, posture_probe};
 pub use fingerprint::{Fingerprints, ProbeKind, ServiceMatch};
 pub use ics::{ics_ports_tcp, ics_ports_udp, probe_ics_service};
 pub use jarm::jarm;
+pub use quic::{probe_quic, quic_info, QuicInfo};
 pub use ssh::ssh_info;
 pub use udp::probe_udp_service;
 

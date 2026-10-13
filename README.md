@@ -119,7 +119,7 @@ language.
 
 Filters: `port asn org country city net product version hostname ssl.cn
 transport jarm http.favicon.hash ssh.hostkey hassh tag vuln has_vuln
-ics has_ics auth has_exploit has_screenshot honeypot before after`; a leading `-` negates; bare/quoted words are
+ics has_ics auth has_exploit has_screenshot honeypot ja4ts before after`; a leading `-` negates; bare/quoted words are
 full-text over banners, titles, technologies and SSH banners. Unknown keys fall
 back to free text. `net:` accepts IPv4/IPv6 CIDRs; `http.favicon.hash:` takes
 the signed mmh3 integer (the Shodan convention) for finding the same deployment.
@@ -277,6 +277,19 @@ reports 92.5% of services at 131x less bandwidth against real IPv4.
 | `--discovery-syn` | one stateless SYN per port | `CAP_NET_RAW`, IPv4 |
 | `--discovery-masscan` | shells out to `masscan` | `masscan` binary |
 | `crusade sweep ingest` | masscan/zmap output from elsewhere | a sanctioned sweep host |
+
+QUIC is probed by default on UDP/443: a host can serve its whole site over
+HTTP/3 and look closed to a TCP-only scan. Identification needs one datagram
+and no handshake — an Initial naming a reserved version forces the server to
+reply with a Version Negotiation packet listing what it supports (RFC 9000
+§6, the approach QScanner took in *It's over 9000*, IMC 2021). The reply is
+unauthenticated, so the connection IDs are checked against the ones sent
+before it is believed.
+
+Ingesting zmap 4.4 output also carries its newer fields: SYN RTT is summarised
+(a reply much faster than a network's other hosts usually came from a
+middlebox in front of them), and the JA4TS stack fingerprint is stored and
+pivotable with `ja4ts:` — the TCP-stack counterpart to `jarm:` and `hassh:`.
 
 The connect scanner is bounded by `concurrency / timeout` whenever a target
 does not answer — the common case on the open internet. At Crusade's defaults

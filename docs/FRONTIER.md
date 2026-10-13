@@ -124,7 +124,9 @@ GeoIP and screenshots today).
 5. D6 IPv6 pipeline **done** (`crates/scan/src/ipv6.rs`, `crusade ipv6`:
    seed hygiene, aliased-prefix detection with persistence, nybble-region
    generation, online feedback — logic tested, untested against live IPv6).
-   D8 QUIC and D9 ZMap fields pending.
+   **D8 QUIC done** (`crates/probe/src/quic.rs`, forced version negotiation on
+   UDP/443 by default) and **D9 done** (zmap 4.4 SYN RTT summarised, JA4TS
+   stored and pivotable via `ja4ts:`).
 6. Honeypot stages 2-3, M4-M7.
 
 ## Open gaps in the literature

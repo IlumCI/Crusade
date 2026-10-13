@@ -43,6 +43,10 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_column("hosts", "last_accessed")? {
         conn.execute_batch("ALTER TABLE hosts ADD COLUMN last_accessed INTEGER")?;
     }
+    if !has_column("services", "ja4ts")? {
+        conn.execute_batch("ALTER TABLE services ADD COLUMN ja4ts TEXT")?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_services_ja4ts ON services(ja4ts)")?;
     if !has_column("hosts", "bg_cursor")? {
         conn.execute_batch("ALTER TABLE hosts ADD COLUMN bg_cursor INTEGER NOT NULL DEFAULT 0")?;
     }
@@ -191,8 +195,8 @@ fn write_host(tx: &rusqlite::Transaction<'_>, host: &Host) -> Result<()> {
                (ip, port, transport, service, product, version, cpe, ssl_cn,
                 jarm, favicon_hash, ssh_hostkey, hassh, tls_version, ics_protocol,
                 auth_state, screenshot, has_screenshot, pending_since, observed_at, banner,
-                content_hash)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                content_hash, ja4ts)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
         )?
         .execute(params![
             ip,
@@ -215,7 +219,8 @@ fn write_host(tx: &rusqlite::Transaction<'_>, host: &Host) -> Result<()> {
             svc.pending_since.map(|t| t.unix_timestamp()),
             svc.observed_at.unix_timestamp(),
             svc.banner,
-            content_hash
+            content_hash,
+            svc.ja4ts
         ])?;
         // Append to the timeline only when this observation differs from the
         // last one: an unchanged rescan would otherwise duplicate the whole

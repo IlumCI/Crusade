@@ -135,6 +135,11 @@ pub struct Service {
     /// JARM active TLS fingerprint (62-char hex), for TLS services.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jarm: Option<String>,
+    /// JA4TS: a fingerprint of the SYN-ACK's TCP options, window and flags,
+    /// identifying the responding network stack rather than the application.
+    /// Populated from zmap 4.4 sweep output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ja4ts: Option<String>,
     /// Filename (under the data screenshots dir) of a captured screenshot of
     /// this service's web UI, when screenshotting is enabled and succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,6 +190,7 @@ impl Service {
             http: None,
             ssh: None,
             jarm: None,
+            ja4ts: None,
             screenshot: None,
             ics: None,
             auth: None,

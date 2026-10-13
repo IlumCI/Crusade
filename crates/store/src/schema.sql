@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS services (
     cpe         TEXT,
     ssl_cn      TEXT,
     jarm        TEXT,
+    ja4ts       TEXT,
     favicon_hash INTEGER,
     ssh_hostkey TEXT,
     hassh       TEXT,

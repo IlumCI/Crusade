@@ -15,8 +15,8 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use crusade_core::query;
 use crusade_scan::{
-    expand_targets, filter_blocked, parse_masscan_json, parse_zmap_csv, Blocklist,
-    RateLimiterParams, ScanConfig, TcpScanner,
+    expand_targets, filter_blocked, parse_masscan_json, Blocklist, RateLimiterParams, ScanConfig,
+    TcpScanner,
 };
 use crusade_store::Store;
 use std::collections::BTreeMap;
@@ -767,9 +767,24 @@ async fn cmd_sweep_ingest(
 ) -> Result<()> {
     let text =
         std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+    // zmap 4.4 can carry a JA4TS stack fingerprint and SYN RTT per row; keep
+    // them alongside the (ip, port) pairs so they are not thrown away.
+    let mut stack_fingerprints: BTreeMap<(IpAddr, u16), String> = BTreeMap::new();
+    let mut rtts: Vec<u32> = Vec::new();
     let pairs = match format {
         "masscan" => parse_masscan_json(&text),
-        "zmap" => parse_zmap_csv(&text),
+        "zmap" => {
+            let rows = crusade_scan::parse_zmap_csv_rich(&text);
+            for row in &rows {
+                if let Some(fp) = &row.ja4ts {
+                    stack_fingerprints.insert((row.ip, row.port), fp.clone());
+                }
+                if let Some(rtt) = row.rtt_us {
+                    rtts.push(rtt);
+                }
+            }
+            rows.into_iter().map(|r| (r.ip, r.port)).collect()
+        }
         _ => unreachable!("clap restricts format"),
     };
     let bl = load_blocklist(cfg, allow_private)?;
@@ -778,6 +793,22 @@ async fn cmd_sweep_ingest(
         "Ingested {} open port(s) after blocklist filtering; probing…",
         pairs.len()
     );
+    if !rtts.is_empty() {
+        rtts.sort_unstable();
+        eprintln!(
+            "  SYN RTT: median {:.1}ms, min {:.1}ms, max {:.1}ms over {} probe(s)",
+            f64::from(rtts[rtts.len() / 2]) / 1000.0,
+            f64::from(rtts[0]) / 1000.0,
+            f64::from(rtts[rtts.len() - 1]) / 1000.0,
+            rtts.len()
+        );
+    }
+    if !stack_fingerprints.is_empty() {
+        eprintln!(
+            "  {} JA4TS stack fingerprint(s) carried through",
+            stack_fingerprints.len()
+        );
+    }
 
     let datasets = Arc::new(pipeline::Datasets::load(cfg)?);
     let mut store = Store::open(&cfg.database.path)?;
@@ -790,6 +821,30 @@ async fn cmd_sweep_ingest(
         cfg.screenshot.enabled,
     )
     .await?;
+
+    // Apply the sweep's stack fingerprints. Done after probing rather than
+    // threaded through the pipeline: they come from the sweep tool, not from
+    // anything Crusade observed, and only this path has them.
+    if !stack_fingerprints.is_empty() {
+        let mut annotated: Vec<crusade_core::Host> = Vec::new();
+        for mut host in hosts.clone() {
+            let mut touched = false;
+            for svc in &mut host.services {
+                if let Some(fp) = stack_fingerprints.get(&(host.ip, svc.port)) {
+                    svc.ja4ts = Some(fp.clone());
+                    touched = true;
+                }
+            }
+            if touched {
+                annotated.push(host);
+            }
+        }
+        if !annotated.is_empty() {
+            store.upsert_hosts(&annotated)?;
+            eprintln!("  recorded JA4TS on {} host(s)", annotated.len());
+        }
+    }
+
     report_auto_archive(cfg, &mut store);
     println!(
         "Indexed {} host(s). Total in store: {}.",
