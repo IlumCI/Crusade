@@ -107,7 +107,9 @@ GeoIP and screenshots today).
    (`crates/vuln/src/honeypot.rs`, `honeypot:` filter, `crusade rescore`);
    the port co-occurrence statistics exist and are used for scoring, not yet
    for D2 port prediction.
-3. D3, D4, D1 (engine core). **D3 done** (`grab::grab_adaptive`); **D4 done**
+3. D3, D4, D1 (engine core). **D1 done** (`crates/core/src/schedule.rs`,
+   `monitor --tiers`, `crusade coverage`: hot/cloud/background tiers with a
+   keyed-permutation background walk, resumable from one cursor per host). **D3 done** (`grab::grab_adaptive`); **D4 done**
    (`crates/core/src/lifecycle.rs`, `[lifecycle]` config, scoped rescans in
    `monitor`); **stateless SYN engine done** (`crates/scan/src/syn.rs`,
    `--discovery-syn`, ~83k probes/s measured vs 166 for connect). D1's tiered

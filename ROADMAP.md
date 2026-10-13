@@ -74,8 +74,10 @@ finds nothing went from 7.6s to 8ms; CVE lookup from a 6s parse to a 1ms
 open), and retention/archiving (usage-aware selection, gzipped archives,
 automatic cleanup at a size limit), and GPS-style predictive port discovery
 (`--predict`), and an IPv6 discovery pipeline (`crusade ipv6`: seed hygiene,
-dealiasing, nybble-region target generation with feedback). See
-`docs/FRONTIER.md` for what remains.
+dealiasing, nybble-region target generation with feedback), and tiered
+continuous coverage (`monitor --tiers`: hot/cloud/background tiers, with each
+host walking a keyed permutation of the port space). See `docs/FRONTIER.md`
+for what remains.
 
 ## v5 — PLANNED
 Frontier upgrade derived from a 2026 literature survey: tiered + predictive

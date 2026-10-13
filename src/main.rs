@@ -127,6 +127,15 @@ enum Command {
         /// Run a single pass and exit.
         #[arg(long)]
         once: bool,
+        /// Use the tiered schedule instead of the configured default ports:
+        /// the hot list every pass, cloud ports on cloud networks, and a slice
+        /// of each host's own port permutation so coverage creeps across the
+        /// whole 65k space.
+        #[arg(long)]
+        tiers: bool,
+        /// Background ports per host per pass when --tiers is set.
+        #[arg(long, default_value_t = 100)]
+        background: usize,
         /// Permit private/loopback ranges (for a local test rig).
         #[arg(long)]
         allow_private: bool,
@@ -212,6 +221,16 @@ enum Command {
     Rescore {
         /// Optional query; empty = whole index.
         query: Vec<String>,
+    },
+    /// Report how far background port coverage has advanced, and what a host
+    /// is scheduled to be probed on next.
+    Coverage {
+        /// Show the next scheduled ports for one host.
+        #[arg(long)]
+        ip: Option<String>,
+        /// Background ports per pass, for the completion estimate.
+        #[arg(long, default_value_t = 100)]
+        background: usize,
     },
     /// IPv6 discovery: learn from the addresses already indexed, then predict
     /// and probe new ones. IPv6 cannot be swept, so the prediction *is* the
@@ -339,8 +358,24 @@ async fn main() -> Result<()> {
             stale,
             batch,
             once,
+            tiers,
+            background,
             allow_private,
-        } => cmd_monitor(&cfg, interval, stale, batch, once, allow_private).await,
+        } => {
+            cmd_monitor(
+                &cfg,
+                MonitorOpts {
+                    interval,
+                    stale,
+                    batch,
+                    once,
+                    tiers,
+                    background,
+                    allow_private,
+                },
+            )
+            .await
+        }
         Command::Export { query, out } => cmd_export(&cfg, &query.join(" "), out),
         Command::Stats { query, top } => cmd_stats(&cfg, &query.join(" "), top),
         Command::Alerts { limit, test } => cmd_alerts(&cfg, limit, test).await,
@@ -360,6 +395,7 @@ async fn main() -> Result<()> {
         } => cmd_worker(&cfg, id, once, poll, allow_private).await,
         Command::Jobs { limit } => cmd_jobs(&cfg, limit),
         Command::Archive { dry_run, status } => cmd_archive(&cfg, dry_run, status),
+        Command::Coverage { ip, background } => cmd_coverage(&cfg, ip, background),
         Command::Ipv6 {
             seeds,
             budget,
@@ -903,16 +939,45 @@ async fn cmd_serve(cfg: &Config, bind: Option<String>) -> Result<()> {
     crusade_web::serve_with_embedder(addr, shared, Some(screens), embedder).await
 }
 
-async fn cmd_monitor(
-    cfg: &Config,
+struct MonitorOpts {
     interval: u64,
     stale: u64,
     batch: usize,
     once: bool,
+    tiers: bool,
+    background: usize,
     allow_private: bool,
-) -> Result<()> {
+}
+
+async fn cmd_monitor(cfg: &Config, opts: MonitorOpts) -> Result<()> {
+    let MonitorOpts {
+        interval,
+        stale,
+        batch,
+        once,
+        tiers,
+        background,
+        allow_private,
+    } = opts;
     let datasets = Arc::new(pipeline::Datasets::load(cfg)?);
     let tcp_ports = cfg.scan.default_ports.clone();
+    // One salt for the installation: it keys every host's port order, so
+    // keeping it fixed is what makes coverage resume rather than restart.
+    let salt = {
+        let store = Store::open(&cfg.database.path)?;
+        store.scan_salt()?
+    };
+    if tiers {
+        eprintln!(
+            "monitor: tiered schedule ({} hot port(s), {} cloud port(s) on cloud networks, \
+             {background} background port(s)/host/pass -> full 65k coverage in {} passes)",
+            crusade_core::schedule::HOT_PORTS.len(),
+            crusade_core::schedule::CLOUD_PORTS.len(),
+            crusade_core::schedule::coverage(0, background)
+                .passes_remaining
+                .map_or("no".to_string(), |n| n.to_string())
+        );
+    }
     loop {
         let bl = load_blocklist(cfg, allow_private)?;
         let cutoff = time::OffsetDateTime::now_utc().unix_timestamp() - stale as i64;
@@ -940,10 +1005,28 @@ async fn cmd_monitor(
                 store.get_host(&ip_str)?
             };
 
-            // Rescan the default ports *and* every port already known on this
-            // host, so a service that has gone away is actually re-probed and
-            // can move through pending to eviction.
-            let mut ports = tcp_ports.clone();
+            // Rescan the configured or scheduled ports *and* every port
+            // already known on this host, so a service that has gone away is
+            // actually re-probed and can move through pending to eviction.
+            let mut plan = None;
+            let mut ports = if tiers {
+                let store = Store::open(&cfg.database.path)?;
+                let cursor = store.background_cursor(&ip_str)?;
+                let budget = crusade_core::TierBudget {
+                    background,
+                    cloud: before
+                        .as_ref()
+                        .and_then(|h| h.asn)
+                        .and_then(crusade_core::cloud_asn)
+                        .is_some(),
+                };
+                let p = crusade_core::schedule::plan(ip, cursor, salt, &budget);
+                let selected = p.ports.clone();
+                plan = Some(p);
+                selected
+            } else {
+                tcp_ports.clone()
+            };
             let mut udp_ports: Vec<u16> = Vec::new();
             if let Some(h) = &before {
                 for svc in &h.services {
@@ -990,6 +1073,12 @@ async fn cmd_monitor(
             .await?;
             if let Some(after) = hosts.into_iter().next() {
                 record_changes(&store, before.as_ref(), &after)?;
+            }
+
+            // Advance the walk only after the probes actually went out, so an
+            // interrupted pass re-probes rather than skipping that slice.
+            if let Some(p) = &plan {
+                store.set_background_cursor(&ip_str, p.next_cursor)?;
             }
         }
 
@@ -1216,6 +1305,95 @@ fn cmd_embed(cfg: &Config, raw: &str) -> Result<()> {
 /// How long a recorded aliasing verdict is reused before being re-probed.
 /// Long, because the answer is stable, but not forever: a network can change.
 const ALIAS_MAX_AGE_SECS: i64 = 90 * 86_400;
+
+/// Report background coverage: how much of the port space each host has been
+/// through, and what comes next.
+fn cmd_coverage(cfg: &Config, ip: Option<String>, background: usize) -> Result<()> {
+    use crusade_core::schedule;
+    let store = Store::open(&cfg.database.path)?;
+    let salt = store.scan_salt()?;
+
+    if let Some(ip) = ip {
+        let addr: IpAddr = ip.parse().with_context(|| format!("invalid IP: {ip}"))?;
+        let host = store.get_host(&ip)?;
+        let cursor = store.background_cursor(&ip)?;
+        let cov = schedule::coverage(cursor, background);
+        println!("{ip}");
+        println!(
+            "  background: {} of {} port(s) covered ({:.1}%)",
+            cov.covered,
+            schedule::PORT_SPACE,
+            cov.fraction * 100.0
+        );
+        match cov.passes_remaining {
+            Some(0) => println!("  the port space has been covered once; the cycle repeats"),
+            Some(n) => println!("  {n} more pass(es) at {background}/pass to finish the cycle"),
+            None => println!("  no background budget, so no completion estimate"),
+        }
+        let cloud = host
+            .as_ref()
+            .and_then(|h| h.asn)
+            .and_then(crusade_core::cloud_asn);
+        if let Some(name) = cloud {
+            println!("  on {name}: the cloud port tier applies");
+        }
+        let plan = schedule::plan(
+            addr,
+            cursor,
+            salt,
+            &crusade_core::TierBudget {
+                background,
+                cloud: cloud.is_some(),
+            },
+        );
+        for (tier, ports) in &plan.by_tier {
+            let shown: Vec<String> = ports.iter().take(12).map(|p| p.to_string()).collect();
+            println!(
+                "  next {:<11} {} port(s): {}{}",
+                tier.as_str(),
+                ports.len(),
+                shown.join(", "),
+                if ports.len() > shown.len() {
+                    ", …"
+                } else {
+                    ""
+                }
+            );
+        }
+        return Ok(());
+    }
+
+    // Whole-index summary.
+    let hosts = store.all_host_ips()?;
+    if hosts.is_empty() {
+        println!("No hosts indexed yet.");
+        return Ok(());
+    }
+    let mut started = 0usize;
+    let mut complete = 0usize;
+    let mut total_cursor: u64 = 0;
+    for host_ip in &hosts {
+        let cursor = store.background_cursor(host_ip)?;
+        if cursor > 0 {
+            started += 1;
+        }
+        if cursor >= u64::from(schedule::PORT_SPACE) {
+            complete += 1;
+        }
+        total_cursor += cursor.min(u64::from(schedule::PORT_SPACE));
+    }
+    let space = u64::from(schedule::PORT_SPACE);
+    println!("{} host(s) indexed", hosts.len());
+    println!(
+        "background coverage: {started} started, {complete} through a full cycle, \
+         {:.2}% of all host-port pairs probed",
+        100.0 * total_cursor as f64 / (hosts.len() as u64 * space) as f64
+    );
+    if started == 0 {
+        println!("Run `crusade monitor --tiers` to begin background coverage.");
+    }
+    Ok(())
+}
 
 struct Ipv6Opts {
     seeds: Option<PathBuf>,

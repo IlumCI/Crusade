@@ -181,25 +181,6 @@ const OPENSSH_KEX_SINCE: &[(&str, &str)] = &[
     ("mlkem768x25519-sha256", "9.9"),
 ];
 
-/// Large cloud/hosting ASNs. ICS endpoints there are rarely physical plant.
-const CLOUD_ASNS: &[(u32, &str)] = &[
-    (16509, "Amazon"),
-    (14618, "Amazon"),
-    (15169, "Google"),
-    (396982, "Google Cloud"),
-    (8075, "Microsoft"),
-    (14061, "DigitalOcean"),
-    (16276, "OVH"),
-    (24940, "Hetzner"),
-    (63949, "Akamai/Linode"),
-    (20473, "Vultr"),
-    (45102, "Alibaba"),
-    (132203, "Tencent"),
-    (31898, "Oracle"),
-    (51167, "Contabo"),
-    (12876, "Scaleway"),
-];
-
 /// Ports whose presence marks an ordinary IT service stack.
 const IT_PORTS: &[u16] = &[
     21, 22, 23, 25, 110, 143, 445, 1433, 3306, 3389, 5432, 5900, 6379, 9200, 11211, 27017,
@@ -373,7 +354,7 @@ fn ics_signals(host: &Host, ev: &mut Vec<HoneypotEvidence>) {
 
     if let Some((asn, name)) = host
         .asn
-        .and_then(|a| CLOUD_ASNS.iter().find(|(c, _)| *c == a))
+        .and_then(|a| crusade_core::cloud_asn(a).map(|name| (a, name)))
     {
         ev.push(HoneypotEvidence {
             signal: "ics-on-cloud".to_string(),

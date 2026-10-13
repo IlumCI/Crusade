@@ -43,6 +43,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_column("hosts", "last_accessed")? {
         conn.execute_batch("ALTER TABLE hosts ADD COLUMN last_accessed INTEGER")?;
     }
+    if !has_column("hosts", "bg_cursor")? {
+        conn.execute_batch("ALTER TABLE hosts ADD COLUMN bg_cursor INTEGER NOT NULL DEFAULT 0")?;
+    }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_hosts_accessed ON hosts(last_accessed, last_seen)",
     )?;
@@ -866,6 +869,56 @@ impl Store {
             .prepare("SELECT ip FROM hosts WHERE last_seen < ?1 ORDER BY last_seen ASC LIMIT ?2")?;
         let rows = stmt.query_map(params![cutoff, limit as i64], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// This installation's scan salt, created on first use.
+    ///
+    /// It keys every host's background port order (see
+    /// [`crusade_core::schedule`]). Persisting it is what makes coverage
+    /// resumable: the same salt reproduces the same walk, so a restart
+    /// continues the cycle instead of starting a different one. Changing it
+    /// deliberately restarts coverage with a fresh order.
+    pub fn scan_salt(&self) -> Result<u64> {
+        let existing: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'scan_salt'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if let Some(value) = existing.and_then(|v| v.parse().ok()) {
+            return Ok(value);
+        }
+        // Derived from the clock; it only needs to differ between
+        // installations, not to be unpredictable.
+        let salt =
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos() as u64 ^ 0x9e37_79b9_7f4a_7c15;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('scan_salt', ?1)",
+            params![salt.to_string()],
+        )?;
+        Ok(salt)
+    }
+
+    /// How far a host's background port walk has advanced.
+    pub fn background_cursor(&self, ip: &str) -> Result<u64> {
+        let cursor: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT bg_cursor FROM hosts WHERE ip = ?1",
+                params![ip],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(cursor.unwrap_or(0).max(0) as u64)
+    }
+
+    /// Advance a host's background cursor.
+    pub fn set_background_cursor(&self, ip: &str, cursor: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE hosts SET bg_cursor = ?2 WHERE ip = ?1",
+            params![ip, cursor as i64],
+        )?;
+        Ok(())
     }
 
     /// Record an IPv6 prefix as aliased, so later runs need not re-probe it.

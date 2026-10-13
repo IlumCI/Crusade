@@ -650,3 +650,45 @@ fn aliased_prefixes_persist_and_age_out() {
         .unwrap();
     assert_eq!(total, 2, "no duplicate rows");
 }
+
+#[test]
+fn scan_salt_is_stable_and_background_cursor_advances() {
+    let path = std::env::temp_dir().join(format!("crusade-sched-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+
+    let salt = {
+        let mut store = Store::open(&path).unwrap();
+        let salt = store.scan_salt().unwrap();
+        assert_ne!(salt, 0);
+        // Stable within a session: a second call must not reshuffle coverage.
+        assert_eq!(store.scan_salt().unwrap(), salt);
+
+        store
+            .upsert_host(&host_with("192.0.2.70", 80, "nginx"))
+            .unwrap();
+        assert_eq!(store.background_cursor("192.0.2.70").unwrap(), 0);
+        store.set_background_cursor("192.0.2.70", 300).unwrap();
+        assert_eq!(store.background_cursor("192.0.2.70").unwrap(), 300);
+        // An unknown host reads as not started rather than failing.
+        assert_eq!(store.background_cursor("203.0.113.9").unwrap(), 0);
+        salt
+    };
+
+    // Stable across reopen: this is what makes coverage resumable.
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.scan_salt().unwrap(), salt);
+    assert_eq!(store.background_cursor("192.0.2.70").unwrap(), 300);
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn rescanning_a_host_preserves_its_background_cursor() {
+    let mut store = Store::open_in_memory().unwrap();
+    let host = host_with("192.0.2.71", 80, "nginx");
+    store.upsert_host(&host).unwrap();
+    store.set_background_cursor("192.0.2.71", 1200).unwrap();
+    // A normal upsert must not reset coverage progress.
+    store.upsert_host(&host).unwrap();
+    assert_eq!(store.background_cursor("192.0.2.71").unwrap(), 1200);
+}

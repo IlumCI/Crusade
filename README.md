@@ -140,6 +140,47 @@ their evidence appear in `crusade host` and the web UI; hosts at 50% or more
 are tagged `honeypot`. Use `-honeypot:true` to keep honeypots out of exposure
 statistics.
 
+## Continuous coverage
+
+A one-shot scan picks a port list and runs. A map that stays current has to
+cover 65,536 ports across every host, forever, without re-probing the same
+ports and without storing a per-host bitmap of what has been tried.
+
+```
+crusade monitor --tiers --background 100   # continuous, tiered
+crusade coverage                           # how far the index has got
+crusade coverage --ip 203.0.113.7          # and what that host gets next
+```
+
+Three tiers, following Censys (Durumeric et al., SIGCOMM 2025):
+
+| tier | ports | when |
+|---|---|---|
+| hot | ~95 common and high-interest ports | every pass |
+| cloud | ~55 orchestration/metadata ports | hosts on cloud and hosting ASNs |
+| background | N ports from that host's own permutation | every pass |
+
+The background tier is the interesting part. Sampling random ports
+independently each pass repeats some and leaves others uncovered forever (the
+coupon-collector problem), while remembering what each host has seen costs
+8 KiB of bitmap per host — 8 GiB at a million hosts. Instead each host walks a
+**keyed permutation** of the port space: a four-round Feistel network over the
+16-bit port, keyed by the host's address and an installation salt. That is a
+bijection by construction, so one cycle visits every port exactly once with no
+gaps, in a different order per host. The only state is a single integer cursor
+per host, and the schedule is reproducible from (address, salt, cursor) — which
+is what makes it resume after a restart rather than starting a different walk,
+and what would let several workers agree without coordinating.
+
+At 100 background ports per pass a host's full port space is covered in 656
+passes; at 500, in 132. The cursor advances only after the probes actually go
+out, so an interrupted pass re-probes that slice instead of skipping it.
+Background results are also the training data for `--predict`, so the
+bandwidth earns its keep twice.
+
+The exhaustive test asserts the property the design rests on: for several
+keys, all 65,536 positions produce all 65,536 ports with no repeat.
+
 ## IPv6
 
 IPv4 can be enumerated; IPv6 cannot. A single /64 holds 18 quintillion
