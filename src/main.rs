@@ -216,6 +216,15 @@ enum Command {
         /// Optional query; empty = whole index.
         query: Vec<String>,
     },
+    /// Show which CPE a product name resolves to, and on what evidence.
+    /// Reads the CVE cache only; sends nothing.
+    Resolve {
+        /// The product name as a banner would give it, e.g. "Apache httpd".
+        name: Vec<String>,
+        /// Also show the candidates it scored against, best first.
+        #[arg(long, default_value_t = 0)]
+        top: usize,
+    },
     /// Recompute honeypot scores for indexed hosts (no network traffic).
     /// Run after editing `<data dir>/honeypot-rules.toml` or as the index grows.
     Rescore {
@@ -461,6 +470,7 @@ async fn main() -> Result<()> {
             json,
         } => cmd_similar(&cfg, &text.join(" "), like, filter, limit, json),
         Command::Embed { query } => cmd_embed(&cfg, &query.join(" ")),
+        Command::Resolve { name, top } => cmd_resolve(&cfg, &name.join(" "), top),
     }
 }
 
@@ -1363,6 +1373,43 @@ fn cmd_similar(
             format!("{addr}/{}", h.transport),
             text
         );
+    }
+    Ok(())
+}
+
+/// Show what a product name resolves to.
+///
+/// Worth having as its own command: resolution decides which CVEs a host is
+/// tagged with, so an operator needs to be able to ask why without reading a
+/// host document.
+fn cmd_resolve(cfg: &Config, name: &str, top: usize) -> Result<()> {
+    if name.trim().is_empty() {
+        println!("Give a product name, e.g. `crusade resolve \"Apache httpd\"`.");
+        return Ok(());
+    }
+    let cache = crusade_vuln::CveCache::open(&cfg.data.dir)?
+        .context("no usable CVE cache; run `crusade update-data` first")?;
+    let vocab = cache.vocab()?;
+    println!("{} CPE pair(s) in the vocabulary.", vocab.len());
+    match vocab.resolve(name) {
+        Some(r) => {
+            println!("\n  {name}  ->  cpe:2.3:a:{}:{}", r.vendor, r.product);
+            println!("  tier {}, score {:.2}", r.tier.as_str(), r.score);
+        }
+        None => println!("\n  {name}  ->  no CPE in the vocabulary looks like this."),
+    }
+    if top > 0 {
+        println!("\n  candidates:");
+        for (c, score, tier) in vocab.rank(name, top) {
+            println!(
+                "    {:>5.3} {:<9} {}:{} ({} rules)",
+                score,
+                tier.as_str(),
+                c.vendor,
+                c.product,
+                c.rules
+            );
+        }
     }
     Ok(())
 }

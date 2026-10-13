@@ -15,6 +15,7 @@ pub struct Config {
     pub alert: Alert,
     pub screenshot: Screenshot,
     pub lifecycle: LifecycleCfg,
+    pub vuln: VulnCfg,
     pub archive: ArchiveCfg,
 }
 
@@ -56,6 +57,24 @@ pub struct Web {
 pub struct Data {
     pub dir: PathBuf,
     pub nmap_probes: PathBuf,
+}
+
+/// CVE matching behaviour.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct VulnCfg {
+    /// Resolve a product name to a CPE that NVD actually uses when the name
+    /// matches no rule literally. On by default: exact matching alone misses
+    /// a large share of real services, because `Apache httpd` and
+    /// `apache:http_server` are the same software under different names. Every
+    /// CVE found this way says so in its detail, with the tier and score.
+    pub resolve_cpe: bool,
+}
+
+impl Default for VulnCfg {
+    fn default() -> Self {
+        VulnCfg { resolve_cpe: true }
+    }
 }
 
 /// How long a service that stops answering is kept. Mirrors the published

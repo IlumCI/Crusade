@@ -42,6 +42,8 @@ pub struct Datasets {
     vulns: OnceLock<VulnSource>,
     honeypot_rules: OnceLock<HoneypotRules>,
     embedder: OnceLock<Option<Embedder>>,
+    /// Whether the CVE cache resolves unknown product names to CPEs.
+    resolve_cpe: bool,
 }
 
 /// Where CVE data is coming from for this run.
@@ -73,6 +75,7 @@ impl Datasets {
             vulns: OnceLock::new(),
             honeypot_rules: OnceLock::new(),
             embedder: OnceLock::new(),
+            resolve_cpe: cfg.vuln.resolve_cpe,
         })
     }
 
@@ -108,10 +111,12 @@ impl Datasets {
         self.vulns.get_or_init(|| {
             let t = std::time::Instant::now();
             match CveCache::open(&self.dir) {
-                Ok(Some(cache)) => {
+                Ok(Some(mut cache)) => {
+                    cache.set_resolution(self.resolve_cpe);
                     info!(
                         ms = t.elapsed().as_millis() as u64,
                         cves = cache.len(),
+                        resolve_cpe = self.resolve_cpe,
                         "opened CVE cache"
                     );
                     return VulnSource::Cache(Box::new(cache));

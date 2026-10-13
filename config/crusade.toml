@@ -28,6 +28,14 @@ bind = "127.0.0.1:8088"
 dir = "data"
 nmap_probes = "/usr/share/nmap/nmap-service-probes"
 
+[vuln]
+# When a product name matches no CVE rule literally, resolve it to a CPE that
+# NVD actually uses (`Apache httpd` -> `apache:http_server`). Candidates are
+# only pairs the indexed rules name, so a resolved CPE always has CVEs behind
+# it, and every CVE found this way records the tier and score in its detail.
+# `crusade resolve "<name>" --top 5` shows the reasoning.
+resolve_cpe = true
+
 [lifecycle]
 # A service that stops answering is not deleted on the first miss (a single
 # miss is usually packet loss or rate limiting). It is marked pending, stays

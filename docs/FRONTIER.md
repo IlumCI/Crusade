@@ -51,7 +51,7 @@ Crusade's engine novel in that respect.
 | # | Change | Crate |
 |---|--------|-------|
 | V1 | Replace the NVD 1.1 data-feed parser (retired by NVD) with NVD CVE API 2.0 / JSON 2.0 bulk feeds, fetched by `update-data`. Today CVE matching is empty on a fresh install. | `vuln`, `update` |
-| V2 | CPE resolution via retrieval: embed the NVD CPE dictionary (see M2), take top-k nearest to a banner, accept only a candidate from that list. Never accept free-text CPEs. | `vuln` |
+| V2 | **Done** (`crates/vuln/src/resolve.rs`, `crusade resolve`). Candidates are the `(vendor, product)` pairs the indexed CVE rules name, so a resolved CPE always has CVEs behind it and nothing is ever free-text. Three tiers: exact (with vendor-prefix stripping), IDF-weighted token F1, character trigrams. The embedding tier the plan called for was built, measured against the real 121,603-pair vocabulary, and **removed**: wrong four times in five, for a structural reason — see the module doc. | `vuln` |
 
 ## 3. Honeypot scoring (`honeypot:` filter)
 

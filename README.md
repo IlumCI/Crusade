@@ -206,6 +206,67 @@ Published work here is industry rather than peer-reviewed, so this stays at
 the explainable baseline my survey recommended; anything learned belongs on
 top of it.
 
+## Matching CVEs to software NVD names differently
+
+CVE matching is a join on `cpe:2.3:a:<vendor>:<product>:<version>`, and the
+join only fires when the name Crusade saw agrees with the name NVD chose. It
+often does not. nmap reports `Apache httpd`; NVD calls that software
+`apache:http_server`. nmap reports `MySQL`; NVD has `mysql` under a dozen
+vendors, one of which is Oracle and the rest of which are packaging projects
+with two CVEs between them. Exact matching therefore finds nothing for a large
+share of real services — VulCPE (arXiv:2505.13895) measures over 50% vendor-name
+inconsistency between CPE and CVE data.
+
+```
+crusade resolve "Apache httpd"          # -> cpe:2.3:a:apache:http_server
+crusade resolve "MySQL" --top 5         # and what it scored against
+```
+
+The candidate set is always the `(vendor, product)` pairs that appear in the
+indexed CVE rules, so whatever comes out has CVEs attached; nothing is ever
+free-text. Generating CPE strings is the tempting approach and the wrong one —
+a generated identifier matches no NVD row, and plain fuzzy matching mislabels
+anything with a non-standard name (arXiv:2412.16607). Three tiers run, each
+with a bar to clear:
+
+| tier | evidence | example |
+|---|---|---|
+| exact | the name is a product, possibly after stripping a vendor the banner included | `Apache Tomcat` -> `apache:tomcat` |
+| lexical | IDF-weighted token F1, needing one rare shared token | `Oracle WebLogic` -> `oracle:weblogic_server` |
+| fuzzy | character trigrams, blended with partial token agreement | `Apache httpd` -> `apache:http_server` |
+
+Token F1 rather than overlap, because recall alone lets any candidate
+*containing* the name win: that is how `nginx` becomes `nginx_amplify_agent`.
+Where candidates fit comparably well the tie goes to the pair NVD documents
+most, which is the prior doing its job — `Redis key-value store` fits
+`redis-store:redis-store` marginally better token-for-token and means
+`redis:redis`. That promotion is allowed only for a candidate whose whole
+product name the banner contains, so `Apache httpd` cannot be pulled to
+`apache:tomcat` by Tomcat's much larger CVE count.
+
+Every CVE found this way carries the tier and score in its detail. A resolved
+match is weaker evidence than an exact one and is never presented as the same
+thing. Turn it off with `resolve_cpe = false` under `[vuln]`.
+
+### The tier that was removed
+
+The plan called for a fourth tier: embed the whole vocabulary, take the nearest
+neighbours of the banner, accept one of them. It was built, embedded (121,603
+pairs, 22 seconds, 30 MB of vectors) and measured. It was wrong four times in
+five. `Microsoft IIS httpd` resolved to `microsoft:system.net.http`, `Cowboy
+Erlang HTTP server` to `ibm:http_server`, and `Totally Bespoke Daemon` — which
+should resolve to nothing at all — to `magzter:bespoke`.
+
+The cause is structural, not a matter of tuning. A static embedding of
+`vendor product` is a mean over a handful of tokens, so a frequent vendor word
+dominates the vector, and the ranking answers "which pair mentions Microsoft"
+rather than "which pair is this software". The rarity weighting in the lexical
+tier asks the better question for none of the cost. The one case retrieval got
+right scored *below* the guard that would have been needed to exclude the wrong
+four: raising the bar removed the win, lowering it kept the losses. So there is
+no embedding tier, and the negative result is recorded in the module doc and
+kept as a test rather than quietly dropped.
+
 ## Screenshot templates
 
 A sweep of the web finds the same default landing page on an enormous number of
