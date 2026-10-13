@@ -282,6 +282,45 @@ can be checked. Slow but *consistent* is load; slow and erratic is generation.
 See arXiv:2502.20589 and the LLM-honeypot work at arXiv:2309.00155,
 2409.08234, 2405.05999.
 
+### Weighing the signals on your own index
+
+Everything above combines signals with a noisy-OR over weights I chose from
+the literature. That is a defensible way to start and a poor way to finish: a
+guess that has been shipped looks exactly like a measurement.
+
+```
+crusade rescore --calibrate          # fit on this index, report, write nothing
+crusade rescore --calibrate --save   # keep the weights, if the fit is usable
+```
+
+This fits a logistic regression from the *behavioural* signals to the rule
+pack's own labels. A rule hit is an exact artefact of known honeypot software —
+Cowrie's default SSH banner, Conpot's device identity — so it is about as close
+to a label as scan data offers, and the question "do the behavioural signals
+predict the hosts the rules recognise" has an answer on a real index. The
+coefficients are printed largest-first and the AUC is measured on a held-out
+third, so the answer can be read rather than trusted.
+
+What that establishes, and what it does not, is worth being exact about. It
+*can* show that a signal carries information and how much relative to the
+others. It *cannot* find honeypots the rules miss and the signals do not
+predict either. And it *will* inherit the rule pack's blind spots: a honeypot
+family no rule covers contributes negative labels, pushing the weights away
+from whatever makes it recognisable. The AUC is measured against the rules, not
+against the truth.
+
+So no weights ship with Crusade. There is no index here to fit them on, and a
+weight file shipped from a synthetic population would be the same guess with a
+more convincing filename. Saving is refused below 30 labelled hosts or an AUC
+of 0.60 — and an AUC near 0.5 is itself a result worth having, because it says
+these signals do not separate the honeypots this rule pack knows about. A rule
+hit always keeps its own weight: it is an artefact, not an inference, and
+nothing a fit says should move it.
+
+No peer-reviewed classifier over scan records exists, so the method is
+deliberately the simplest thing that can be checked: a linear model whose
+coefficients can be read, not a forest whose cannot.
+
 ## Asking in English
 
 ```

@@ -259,6 +259,14 @@ enum Command {
     Rescore {
         /// Optional query; empty = whole index.
         query: Vec<String>,
+        /// Instead of rescoring, fit the behavioural signals against the rule
+        /// pack's own labels on this index and report what they are worth.
+        /// Nothing is written without --save.
+        #[arg(long)]
+        calibrate: bool,
+        /// Write the fitted weights to `<data dir>/honeypot-weights.json`.
+        #[arg(long)]
+        save: bool,
     },
     /// List the hosts least like the rest of the index, with the reason for
     /// each. Reads the index only; sends nothing.
@@ -492,7 +500,17 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Rescore { query } => cmd_rescore(&cfg, &query.join(" ")),
+        Command::Rescore {
+            query,
+            calibrate,
+            save,
+        } => {
+            if calibrate {
+                cmd_calibrate(&cfg, &query.join(" "), save)
+            } else {
+                cmd_rescore(&cfg, &query.join(" "))
+            }
+        }
         Command::Similar {
             text,
             like,
@@ -2393,11 +2411,95 @@ fn report_auto_archive(cfg: &Config, store: &mut Store) {
     }
 }
 
+/// Fit the behavioural honeypot signals against the rule pack's labels.
+///
+/// The shipped weights are a prior I chose from the literature. This replaces
+/// them with numbers from the index it is run on — see
+/// `crusade_vuln::calibrate` for what that establishes and, more importantly,
+/// what it does not.
+fn cmd_calibrate(cfg: &Config, raw: &str, save: bool) -> Result<()> {
+    use crusade_vuln::calibrate;
+    let q = query::parse(raw).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let store = Store::open(&cfg.database.path)?;
+    let rules = pipeline::load_honeypot_rules(&cfg.data.dir);
+    // Deliberately not loading any previously fitted weights: a calibration
+    // measured against scores that already used a calibration would be
+    // measuring itself.
+    let scorer = pipeline::honeypot_scorer(&rules, &store);
+
+    let mut samples = Vec::new();
+    for ip in store.matching_ips(&q)? {
+        if let Some(mut h) = store.get_host(&ip)? {
+            // Scored fresh rather than read from the stored assessment, so a
+            // calibration never depends on when the index was last rescored.
+            scorer.apply(&mut h);
+            if let Some(sample) = calibrate::sample(&h) {
+                samples.push(sample);
+            }
+        }
+    }
+    if samples.is_empty() {
+        println!("No scored hosts match. Scan something first.");
+        return Ok(());
+    }
+
+    let c = calibrate::fit(&samples)?;
+    println!(
+        "{} host(s), {} carrying a rule hit (the label).",
+        c.hosts, c.labelled
+    );
+    println!("held-out AUC: {:.3} (0.5 is a coin flip)\n", c.auc);
+    println!("{:<24} {:>8}", "signal", "weight");
+    for (signal, weight) in c.ranked() {
+        println!("{signal:<24} {weight:>8.3}");
+    }
+
+    if c.labelled < calibrate::MIN_LABELLED {
+        println!(
+            "\nOnly {} labelled host(s); {} is the minimum for this to mean \
+             anything. The rule pack has to recognise some honeypots before \
+             the other signals can be weighed against them.",
+            c.labelled,
+            calibrate::MIN_LABELLED
+        );
+    } else if !c.is_usable() {
+        println!(
+            "\nAt {:.3} the signals barely predict the rule pack's labels on \
+             this index. That is a result: it says these behavioural signals \
+             do not separate the honeypots this rule pack knows about, and \
+             the shipped weights are no worse than a fit.",
+            c.auc
+        );
+    } else {
+        println!(
+            "\nThis fit separates the labels. {}",
+            if save {
+                "Saving."
+            } else {
+                "Re-run with --save to keep it."
+            }
+        );
+    }
+
+    if save {
+        anyhow::ensure!(
+            c.is_usable(),
+            "refusing to save a fit of {} labelled host(s) at AUC {:.3}",
+            c.labelled,
+            c.auc
+        );
+        let path = cfg.data.dir.join("honeypot-weights.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&c)?)?;
+        println!("Wrote {}.", path.display());
+    }
+    Ok(())
+}
+
 fn cmd_rescore(cfg: &Config, raw: &str) -> Result<()> {
     let q = query::parse(raw).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut store = Store::open(&cfg.database.path)?;
     let rules = pipeline::load_honeypot_rules(&cfg.data.dir);
-    let scorer = pipeline::honeypot_scorer(&rules, &store);
+    let scorer = pipeline::honeypot_scorer_in(&rules, &store, &cfg.data.dir);
     let (mut n, mut flagged) = (0u64, 0u64);
     for ip in store.matching_ips(&q)? {
         if let Some(mut h) = store.get_host(&ip)? {

@@ -205,11 +205,25 @@ const WINDOWS_MARKERS: &[&str] = &[
 pub struct HoneypotScorer {
     rules: HoneypotRules,
     ports: Option<PortModel>,
+    /// Weights fitted on an operator's own index, when they have any (see
+    /// [`crate::calibrate`]). Without them the noisy-OR over the weights in
+    /// this file applies, which is a prior rather than a measurement.
+    calibration: Option<crate::calibrate::Calibration>,
 }
 
 impl HoneypotScorer {
     pub fn new(rules: HoneypotRules) -> Self {
-        HoneypotScorer { rules, ports: None }
+        HoneypotScorer {
+            rules,
+            ports: None,
+            calibration: None,
+        }
+    }
+
+    /// Use fitted weights for the behavioural signals.
+    pub fn with_calibration(mut self, c: crate::calibrate::Calibration) -> Self {
+        self.calibration = Some(c);
+        self
     }
 
     /// Enable the port co-occurrence signal.
@@ -230,7 +244,36 @@ impl HoneypotScorer {
         if let Some(stats) = &self.ports {
             port_pair_signal(host, stats, &mut ev);
         }
-        let keep: f32 = ev.iter().map(|e| 1.0 - e.weight).product();
+        // A rule hit is an exact artefact of known honeypot software, so it
+        // keeps its own weight whatever a fit says; the behavioural signals
+        // are the guesses worth replacing. When weights have been fitted, the
+        // two are combined as independent evidence, which is what the
+        // noisy-OR already assumes.
+        let (rules_ev, behaviour_ev): (Vec<&HoneypotEvidence>, Vec<&HoneypotEvidence>) =
+            ev.iter().partition(|e| e.signal.starts_with("rule:"));
+        let keep_rules: f32 = rules_ev.iter().map(|e| 1.0 - e.weight).product();
+        let keep_behaviour: f32 = match &self.calibration {
+            Some(c) => {
+                let present: Vec<f32> = crate::calibrate::FEATURES
+                    .iter()
+                    .map(|f| {
+                        if behaviour_ev.iter().any(|e| e.signal == *f) {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect();
+                // The fit's score at no signals at all is the index's base
+                // rate, not zero, so subtracting it keeps "nothing observed"
+                // meaning "no evidence".
+                let base = c.score(&vec![0.0; crate::calibrate::FEATURES.len()]);
+                let p = c.score(&present);
+                1.0 - ((p - base) / (1.0 - base).max(1e-6)).clamp(0.0, 1.0)
+            }
+            None => behaviour_ev.iter().map(|e| 1.0 - e.weight).product(),
+        };
+        let keep = keep_rules * keep_behaviour;
         HoneypotAssessment {
             score: ((1.0 - keep) * 1000.0).round() / 1000.0,
             evidence: ev,
@@ -556,6 +599,7 @@ fn port_pair_signal(host: &Host, stats: &PortModel, ev: &mut Vec<HoneypotEvidenc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::calibrate as crusade_vuln_calibrate;
     use crusade_core::{IcsInfo, SshInfo};
     use std::net::IpAddr;
 
@@ -650,6 +694,57 @@ mod tests {
         assert!(signals.contains(&"slow-to-answer"), "{signals:?}");
         assert!(!signals.contains(&"erratic-answer-time"), "{signals:?}");
         assert!(a.score < HONEYPOT_TAG_THRESHOLD, "{}", a.score);
+    }
+
+    /// Fitted weights must replace the behavioural guesses without touching
+    /// the rule hits, which are exact artefacts rather than inferences.
+    #[test]
+    fn a_calibration_replaces_only_the_behavioural_weights() {
+        use crusade_vuln_calibrate::Calibration;
+        let mut h = host();
+        h.services
+            .push(timed_service(22, 10, &[900, 2600, 500, 1800, 1200]));
+        let plain = HoneypotScorer::new(HoneypotRules::builtin()).assess(&h);
+        assert!(plain.score > 0.0);
+
+        // A fit that says the behavioural signals mean nothing.
+        let flat = Calibration {
+            weights: vec![0.0; crusade_vuln_calibrate::FEATURES.len()],
+            bias: -1.0,
+            hosts: 500,
+            labelled: 100,
+            auc: 0.8,
+        };
+        let scored = HoneypotScorer::new(HoneypotRules::builtin())
+            .with_calibration(flat)
+            .assess(&h);
+        assert_eq!(
+            scored.score, 0.0,
+            "weights of zero should leave no behavioural evidence: {:?}",
+            scored.evidence
+        );
+        assert!(
+            !scored.evidence.is_empty(),
+            "the evidence is still reported, only its weight changed"
+        );
+
+        // A fit that says they mean a great deal.
+        let strong = Calibration {
+            weights: vec![6.0; crusade_vuln_calibrate::FEATURES.len()],
+            bias: -6.0,
+            hosts: 500,
+            labelled: 100,
+            auc: 0.9,
+        };
+        let scored = HoneypotScorer::new(HoneypotRules::builtin())
+            .with_calibration(strong)
+            .assess(&h);
+        assert!(
+            scored.score > plain.score,
+            "{} vs {}",
+            scored.score,
+            plain.score
+        );
     }
 
     #[test]

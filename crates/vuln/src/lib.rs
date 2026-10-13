@@ -26,6 +26,7 @@
 //! exploit. Acting on a tag is left entirely to the operator.
 
 pub mod cache;
+pub mod calibrate;
 pub mod cve;
 pub mod exploit;
 pub mod heuristics;

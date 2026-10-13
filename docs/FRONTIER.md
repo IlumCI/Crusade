@@ -83,10 +83,16 @@ applies too. LLM-backed honeypots defeat static banner rules but leak through
 latency and jitter (arXiv:2502.20589; LLM honeypots arXiv:2309.00155,
 2409.08234, 2405.05999, 2605.29963).
 
-Stage 3 - learned classifier: gradient-boosted trees or logistic regression
-over the stage 1-2 features, bootstrapped from rule labels, trained offline,
-weights shipped, scored in pure Rust. No peer-reviewed classifier on scan
-records exists (gap), so this is novel ground.
+Stage 3 - **Done** (`crates/vuln/src/calibrate.rs`, `crusade rescore
+--calibrate`): logistic regression in pure Rust from the behavioural signals to
+the rule pack's labels, with the AUC on a held-out third (split by hash, not by
+period — a period aliases with periods in scan data) and readable
+coefficients. Weights are *not* shipped: there is no index here to fit them on,
+and a fit from a synthetic population would be the same guess with a more
+convincing filename. An operator fits on their own index; saving is refused
+below 30 labelled hosts or AUC 0.60. Rule hits keep their own weight, being
+artefacts rather than inferences. No peer-reviewed classifier on scan records
+exists (gap), so the method is the simplest thing that can be checked.
 
 ## 4. Embedded models (CPU-only, in-binary, no keys)
 
@@ -132,7 +138,7 @@ GeoIP and screenshots today).
    **D8 QUIC done** (`crates/probe/src/quic.rs`, forced version negotiation on
    UDP/443 by default) and **D9 done** (zmap 4.4 SYN RTT summarised, JA4TS
    stored and pivotable via `ja4ts:`).
-6. Honeypot stages 2-3, M4-M7.
+6. Honeypot stages 2-3 **done**; M4-M6 done, M7 remaining.
 
 ## Open gaps in the literature
 

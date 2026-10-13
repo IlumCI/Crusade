@@ -234,7 +234,33 @@ pub fn load_honeypot_rules(dir: &Path) -> HoneypotRules {
 /// A scorer over the given rules, with port co-occurrence statistics learned
 /// from the current index.
 pub fn honeypot_scorer(rules: &HoneypotRules, store: &Store) -> HoneypotScorer {
-    let scorer = HoneypotScorer::new(rules.clone());
+    honeypot_scorer_in(rules, store, Path::new("."))
+}
+
+/// As [`honeypot_scorer`], also loading fitted weights from `dir` when
+/// `crusade rescore --calibrate --save` has written any.
+pub fn honeypot_scorer_in(rules: &HoneypotRules, store: &Store, dir: &Path) -> HoneypotScorer {
+    let mut scorer = HoneypotScorer::new(rules.clone());
+    let weights = dir.join("honeypot-weights.json");
+    if let Ok(text) = std::fs::read_to_string(&weights) {
+        match serde_json::from_str::<crusade_vuln::calibrate::Calibration>(&text) {
+            Ok(c) if c.is_usable() => {
+                info!(
+                    auc = c.auc,
+                    labelled = c.labelled,
+                    "using fitted honeypot weights"
+                );
+                scorer = scorer.with_calibration(c);
+            }
+            Ok(c) => warn!(
+                "ignoring {}: a fit of {} labelled host(s) at AUC {:.3} is not usable",
+                weights.display(),
+                c.labelled,
+                c.auc
+            ),
+            Err(e) => warn!("{} is not a calibration ({e})", weights.display()),
+        }
+    }
     match store.tcp_port_sets() {
         Ok(sets) => scorer.with_port_stats(PortModel::from_port_sets(&sets)),
         Err(e) => {
@@ -382,7 +408,7 @@ pub async fn process_scoped(
         reverse_dns: true,
     };
     let timeout = cfg.connect_timeout();
-    let honeypot = honeypot_scorer(datasets.honeypot_rules(), store);
+    let honeypot = honeypot_scorer_in(datasets.honeypot_rules(), store, &datasets.dir);
 
     let policy = cfg.lifecycle.policy();
     let now = time::OffsetDateTime::now_utc();
