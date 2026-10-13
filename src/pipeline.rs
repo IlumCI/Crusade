@@ -44,6 +44,8 @@ pub struct Datasets {
     embedder: OnceLock<Option<Embedder>>,
     /// Whether the CVE cache resolves unknown product names to CPEs.
     resolve_cpe: bool,
+    /// Weakest resolution tier accepted.
+    resolve_min_tier: String,
 }
 
 /// Where CVE data is coming from for this run.
@@ -62,6 +64,17 @@ impl VulnSource {
             VulnSource::Memory(db) => db.tag_host(host),
         }
     }
+
+    /// Name the software behind banners that fingerprinting could not place,
+    /// before CVE matching runs — the product is what CVE matching joins on,
+    /// so filling it in afterwards would be too late.
+    pub fn identify_products(&self, host: &mut Host) -> usize {
+        match self {
+            VulnSource::Cache(c) => c.identify_products(host),
+            // The in-memory fallback has no vocabulary table to search.
+            VulnSource::Memory(_) => 0,
+        }
+    }
 }
 
 impl Datasets {
@@ -76,6 +89,7 @@ impl Datasets {
             honeypot_rules: OnceLock::new(),
             embedder: OnceLock::new(),
             resolve_cpe: cfg.vuln.resolve_cpe,
+            resolve_min_tier: cfg.vuln.resolve_min_tier.clone(),
         })
     }
 
@@ -113,6 +127,13 @@ impl Datasets {
             match CveCache::open(&self.dir) {
                 Ok(Some(mut cache)) => {
                     cache.set_resolution(self.resolve_cpe);
+                    match crusade_vuln::Tier::parse(&self.resolve_min_tier) {
+                        Some(t) => cache.set_resolution_floor(t),
+                        None => warn!(
+                            "unknown resolve_min_tier {:?}; keeping the default",
+                            self.resolve_min_tier
+                        ),
+                    }
                     info!(
                         ms = t.elapsed().as_millis() as u64,
                         cves = cache.len(),
@@ -432,6 +453,10 @@ pub async fn process_scoped(
 
         // Enrich (geo/ASN + reverse DNS), then tag.
         enrich_host(&mut host, datasets.geo(), &enrich_cfg).await;
+        let named = datasets.vulns().identify_products(&mut host);
+        if named > 0 {
+            info!(%ip, named, "named product(s) from the banner alone");
+        }
         datasets.vulns().tag_host(&mut host);
         honeypot.apply(&mut host);
 

@@ -47,8 +47,18 @@
 
 use std::collections::HashMap;
 
-/// Minimum token F1 for a lexical resolution.
-const MIN_LEXICAL: f32 = 0.60;
+/// A lexical resolution needs both of these: a shared token rare enough to
+/// mean something, and enough of the two names in common that the match is
+/// not one word out of five.
+///
+/// Both, because each alone fails in a way measured against nmap's own CPE
+/// assignments. Requiring only coverage sent `Titan ftpd` to `netbsd:ftpd` —
+/// a short generic name shares the common word completely. Requiring only
+/// rarity answered nearly every question, dropping refusals from 157 to 17
+/// and nearly tripling the wrong answers; for something that attaches
+/// someone's CVEs to a host, refusing is the better failure.
+const MIN_PEAK_RARITY: f32 = 0.65;
+const MIN_COVERAGE: f32 = 0.45;
 /// A lexical resolution must share at least one token this rare. Rarity is
 /// IDF divided by its maximum for the vocabulary's size, so the bar means the
 /// same thing on a ten-entry test set and on NVD's hundred thousand pairs.
@@ -79,6 +89,29 @@ pub enum Tier {
 }
 
 impl Tier {
+    /// Parse a tier named in configuration.
+    pub fn parse(name: &str) -> Option<Tier> {
+        match name.to_ascii_lowercase().as_str() {
+            "exact" => Some(Tier::Exact),
+            "lexical" => Some(Tier::Lexical),
+            "fuzzy" => Some(Tier::Fuzzy),
+            _ => None,
+        }
+    }
+
+    /// How much evidence this tier represents, for comparing against a floor.
+    /// Measured against nmap's own CPE assignments (`cargo run --release
+    /// --example resolve_precision`), the tiers really do differ: exact named
+    /// the right product for 84% of the pairs it answered, lexical for 57%,
+    /// fuzzy for 77% of a much smaller number.
+    pub fn strength(self) -> u8 {
+        match self {
+            Tier::Exact => 3,
+            Tier::Lexical => 1,
+            Tier::Fuzzy => 2,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Tier::Exact => "exact",
@@ -230,6 +263,15 @@ impl ProductVocab {
         }
     }
 
+    /// Whether the vocabulary holds this exact pair. Used by the precision
+    /// harness to separate "got it wrong" from "has no CVEs, so cannot be an
+    /// answer at all".
+    pub fn contains(&self, vendor: &str, product: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|c| c.vendor == vendor && c.product == product)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -293,7 +335,22 @@ impl ProductVocab {
             }
             let recall = overlap / q_weight;
             let precision = overlap / c_weight;
-            out.push((2.0 * recall * precision / (recall + precision), i));
+            let f1 = 2.0 * recall * precision / (recall + precision);
+            // The rarest token shared matters more than how much of the mass
+            // is shared. Measured against nmap's own CPE assignments, plain
+            // F1 sent `Titan ftpd` to `netbsd:ftpd` and `Hummingbird ftpd` to
+            // the same place: a short candidate sharing the generic `ftpd`
+            // beat a longer one sharing the distinctive `titan`, because the
+            // extra words cost it precision. Sharing a name nobody else uses
+            // is the evidence; sharing a word every FTP server has is not.
+            // Peak rarity leads, in tenths so near-equal rarities tie and F1
+            // decides between them.
+            let peak = shared.iter().map(|t| self.rarity(t)).fold(0.0f32, f32::max);
+            if peak < MIN_PEAK_RARITY || f1 < MIN_COVERAGE {
+                continue;
+            }
+            let banded = (peak * 10.0).floor() / 10.0;
+            out.push((banded + f1 / 100.0, i));
         }
         out
     }
@@ -421,7 +478,7 @@ impl ProductVocab {
         }
 
         // Tier 2: IDF-weighted token F1 over candidates sharing a token.
-        if let Some((score, i)) = self.decide(&self.lexical_scores(&q), MIN_LEXICAL, &q) {
+        if let Some((score, i)) = self.decide(&self.lexical_scores(&q), 0.0, &q) {
             let c = &self.entries[i as usize];
             return Some(Resolution {
                 vendor: c.vendor.clone(),
@@ -536,6 +593,35 @@ mod tests {
     fn a_name_like_nothing_resolves_to_nothing() {
         let v = ProductVocab::new(vec![cand("magzter", "bespoke"), cand("exim", "exim")]);
         assert!(v.resolve("Totally Bespoke Daemon").is_none());
+    }
+
+    /// The failure the peak-rarity rule exists for, taken from the measured
+    /// misses: sharing the generic `ftpd` must not beat sharing the
+    /// distinctive `titan`.
+    #[test]
+    fn a_distinctive_word_beats_a_generic_one() {
+        // Enough generic `ftpd` products that the word is common and the
+        // vendor names are not, as in the real vocabulary.
+        let mut entries = vec![
+            cand("netbsd", "ftpd"),
+            cand("southrivertech", "titan_ftp_server"),
+        ];
+        for v in [
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
+        ] {
+            entries.push(cand(v, &format!("{v}_ftpd")));
+        }
+        let v = ProductVocab::new(entries);
+        let r = v.resolve("Titan ftpd").expect("resolved");
+        assert_eq!(r.product, "titan_ftp_server", "score {}", r.score);
+    }
+
+    #[test]
+    fn a_tier_floor_can_be_compared() {
+        assert!(Tier::Exact.strength() > Tier::Lexical.strength());
+        assert!(Tier::Fuzzy.strength() > Tier::Lexical.strength());
+        assert_eq!(Tier::parse("EXACT"), Some(Tier::Exact));
+        assert_eq!(Tier::parse("nonsense"), None);
     }
 
     #[test]

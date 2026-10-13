@@ -69,11 +69,23 @@ pub struct VulnCfg {
     /// `apache:http_server` are the same software under different names. Every
     /// CVE found this way says so in its detail, with the tier and score.
     pub resolve_cpe: bool,
+    /// Weakest resolution tier to accept: `exact`, `lexical` or `fuzzy`.
+    ///
+    /// Measured against nmap's own CPE assignments on 571 names
+    /// (`cargo run --release --example resolve_precision`), the exact tier
+    /// named the right product for 84% of the pairs it answered and the
+    /// lexical tier for 57%. `lexical` is the default because a 57%-correct
+    /// CVE list that says how it was arrived at beats no CVE list at all;
+    /// `exact` is for an index whose tags are acted on without being read.
+    pub resolve_min_tier: String,
 }
 
 impl Default for VulnCfg {
     fn default() -> Self {
-        VulnCfg { resolve_cpe: true }
+        VulnCfg {
+            resolve_cpe: true,
+            resolve_min_tier: "lexical".to_string(),
+        }
     }
 }
 

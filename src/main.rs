@@ -1577,6 +1577,12 @@ fn cmd_ask(cfg: &Config, question: &str, opts: AskOpts) -> Result<()> {
         return Ok(());
     }
 
+    // Which engine. Measured against the benchmarks in `crusade_core::nlq`,
+    // the two are good at opposite things: the cue translator got 19 of 20 of
+    // the questions its phrases were written for and 0 of 8 paraphrases, the
+    // model 7 of 20 and 4 of 8. So neither replaces the other, and the default
+    // is to try the cues and fall back to the model only where they produced
+    // nothing — precise where it applies, general where it does not.
     let query = if opts.model {
         match ask_model(cfg, question, &vocab, opts.samples)? {
             Some(q) => q,
@@ -1595,12 +1601,22 @@ fn cmd_ask(cfg: &Config, question: &str, opts: AskOpts) -> Result<()> {
             );
         }
         if !t.is_structured() {
-            println!(
-                "\n  Nothing in that named a filter, so it is a full-text search. \
-                 `crusade ask --grammar` lists the fields."
-            );
+            if model_available(cfg) {
+                println!("\n  No cue phrase matched; asking the local model…\n");
+                match ask_model(cfg, question, &vocab, opts.samples)? {
+                    Some(q) => q,
+                    None => t.query,
+                }
+            } else {
+                println!(
+                    "\n  Nothing in that named a filter, so it is a full-text search. \
+                     `crusade ask --grammar` lists the fields."
+                );
+                t.query
+            }
+        } else {
+            t.query
         }
-        t.query
     };
 
     if opts.run {
@@ -1609,6 +1625,21 @@ fn cmd_ask(cfg: &Config, question: &str, opts: AskOpts) -> Result<()> {
     }
     println!("\n  Run it with: crusade search '{query}'");
     Ok(())
+}
+
+/// Whether a model is installed and this build can use it.
+#[cfg(feature = "llm")]
+fn model_available(cfg: &Config) -> bool {
+    cfg.data
+        .dir
+        .join("models")
+        .join(crusade_llm::MODEL_FILE)
+        .exists()
+}
+
+#[cfg(not(feature = "llm"))]
+fn model_available(_cfg: &Config) -> bool {
+    false
 }
 
 /// Translate with the local model, when the binary was built with it.

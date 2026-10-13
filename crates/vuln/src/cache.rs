@@ -26,7 +26,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::cve::{CpeMatch, CveEntry, KevCatalog};
 use crate::exploit::ExploitRefs;
-use crate::resolve::{Candidate, ProductVocab, Resolution};
+use crate::resolve::{Candidate, ProductVocab, Resolution, Tier as Resolution2Tier};
 
 /// Schema of the cache database. Bumped when the layout changes, which forces
 /// a rebuild rather than a misread.
@@ -150,6 +150,8 @@ pub struct CveCache {
     /// Memo of product name -> resolution, including the misses: a scan is
     /// mostly the same few unresolvable banners repeated.
     resolved: Mutex<HashMap<String, Option<Resolution>>>,
+    /// Weakest tier accepted.
+    floor: Resolution2Tier,
 }
 
 /// One candidate rule, as read back from the cache.
@@ -208,6 +210,7 @@ impl CveCache {
             resolution: false,
             vocab: OnceLock::new(),
             resolved: Mutex::new(HashMap::new()),
+            floor: Resolution2Tier::Lexical,
         }))
     }
 
@@ -391,6 +394,14 @@ impl CveCache {
             .flatten()
     }
 
+    /// Refuse resolutions weaker than this tier.
+    ///
+    /// The tiers differ in measured precision, so which ones to trust is a
+    /// judgement about how a particular index is used rather than a constant.
+    pub fn set_resolution_floor(&mut self, tier: Resolution2Tier) {
+        self.floor = tier;
+    }
+
     /// Turn CPE resolution on or off for this cache.
     ///
     /// With it on, a product name that matches no rule literally is resolved
@@ -409,20 +420,10 @@ impl CveCache {
                 return hit.clone();
             }
         }
-        let vocab = self.vocab.get_or_init(|| {
-            let t = std::time::Instant::now();
-            let v = self.vocab().unwrap_or_else(|e| {
-                tracing::warn!("no CPE vocabulary: {e}");
-                ProductVocab::new(Vec::new())
-            });
-            tracing::info!(
-                ms = t.elapsed().as_millis() as u64,
-                pairs = v.len(),
-                "loaded CPE vocabulary"
-            );
-            v
-        });
-        let out = vocab.resolve(name);
+        let out = self
+            .vocab_lazy()
+            .resolve(name)
+            .filter(|r| r.tier.strength() >= self.floor.strength());
         if let Ok(mut memo) = self.resolved.lock() {
             memo.insert(key, out.clone());
         }
@@ -494,6 +495,70 @@ impl CveCache {
             }
         }
         tags
+    }
+
+    /// Name the software behind each banner that fingerprinting could not
+    /// place, using the CVE vocabulary (see [`crate::identify`]).
+    ///
+    /// Only services with no product are touched: a fingerprint match is
+    /// evidence from a hand-written rule about this exact banner, and nothing
+    /// here outranks it. Each name that is filled in records how it was
+    /// arrived at, since the product decides which CVEs the host carries.
+    pub fn identify_products(&self, host: &mut Host) -> usize {
+        if !self.resolution {
+            return 0;
+        }
+        let mut named = 0;
+        let mut evidence: Vec<String> = Vec::new();
+        for svc in &mut host.services {
+            if svc.product.is_some() {
+                continue;
+            }
+            let Some(banner) = svc.banner.as_deref() else {
+                continue;
+            };
+            let vocab = self.vocab_lazy();
+            let Some(r) = crate::identify::identify(banner, vocab) else {
+                continue;
+            };
+            evidence.push(format!(
+                "port {}: {} ({}, {:.2})",
+                svc.port,
+                r.product,
+                r.tier.as_str(),
+                r.score
+            ));
+            svc.product = Some(r.product.clone());
+            named += 1;
+        }
+        if named > 0 {
+            host.tags.push(Tag {
+                name: "product-from-banner".to_string(),
+                cve: None,
+                detail: Some(format!(
+                    "named from the banner, not a fingerprint: {}",
+                    evidence.join("; ")
+                )),
+            });
+        }
+        named
+    }
+
+    /// The vocabulary, loading it on first use.
+    fn vocab_lazy(&self) -> &ProductVocab {
+        self.vocab.get_or_init(|| {
+            let t = std::time::Instant::now();
+            let v = self.vocab().unwrap_or_else(|e| {
+                tracing::warn!("no CPE vocabulary: {e}");
+                ProductVocab::new(Vec::new())
+            });
+            tracing::info!(
+                ms = t.elapsed().as_millis() as u64,
+                pairs = v.len(),
+                "loaded CPE vocabulary"
+            );
+            v
+        })
     }
 
     /// Append heuristic, CVE and exploit tags to `host`, as

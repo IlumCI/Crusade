@@ -30,6 +30,7 @@ pub mod cve;
 pub mod exploit;
 pub mod heuristics;
 pub mod honeypot;
+pub mod identify;
 pub mod resolve;
 
 pub use cache::{source_fingerprint, CveCache, CACHE_FILE};
@@ -40,4 +41,5 @@ pub use cve::{
 pub use exploit::{parse_exploitdb_csv, parse_metasploit_json, ExploitRefs};
 pub use heuristics::heuristic_tags;
 pub use honeypot::{HoneypotRules, HoneypotScorer, HONEYPOT_TAG_THRESHOLD};
+pub use identify::{candidate_names, identify};
 pub use resolve::{Candidate, ProductVocab, Resolution, Tier};

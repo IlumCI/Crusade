@@ -319,11 +319,62 @@ recognised because the index has seen it — `crusade ask` reads the product
 facet and passes it in, so the translator learns the vocabulary of the data it
 is searching instead of carrying a list that would be endless and stale.
 
-It scores 19 of 20 exact on the benchmark in `crusade_core::nlq`; `cargo run
---example nlq_score` reproduces that, and the one miss needs a populated index
-to supply the product name. The benchmark lives in the crate rather than in a
-test file because a model engine is measured against the same questions, and a
-benchmark that lives inside one engine's tests is not a benchmark.
+### Two engines, each good at what the other is not
+
+There is a second engine: a 0.5-1.5B instruct model, running locally under the
+same generated grammar, so whatever it emits parses by construction. It is
+behind `--features llm`, because llama.cpp is a C++ build of several minutes
+and the model is hundreds of megabytes.
+
+Both engines are measured on the same two question sets, with `cargo run
+--features llm --example nlq_score -- <model.gguf>`:
+
+| | cue phrases (20) | paraphrases (8) |
+|---|---|---|
+| cue translator | **19 exact** | 0 exact |
+| Qwen2.5-1.5B Q4, grammar-constrained | 7 exact, 2 partial | **4 exact** |
+
+Neither replaces the other, and the numbers say why. The cues are nearly
+perfect on the questions they were written for and helpless outside them —
+"boxes in the netherlands nobody needs a password for" came back as
+`country:NL nobody needs password`, and "remote desktop anywhere but the
+united states" came back as `country:US`, the opposite of the question. The
+model handles those (`country:NL auth:open`) and is far worse at the ordinary
+phrasings, at about 12 seconds a question against microseconds. So `crusade
+ask` runs the cues and falls back to the model only where they produced
+nothing structured.
+
+Three things had to be right before the model was usable at all, and each was
+found by measurement rather than reasoning:
+
+- **The grammar has to accept a leading space.** A model completing `Query:`
+  wants a space-prefixed token, because that is how its tokenizer represents
+  the start of a word. Forbid it and every such piece is masked at the first
+  position, so generation falls to whichever unprefixed key ranks highest.
+  That put a spurious `ics:modbus` in front of seven of eight otherwise
+  sensible queries, and no amount of prompting removed it — the cause was
+  mechanical, not semantic.
+- **The prompt has to describe exactly the grammar's fields.** With a prompt
+  listing 29 and a grammar allowing 18, the model aims at a field it cannot
+  use, the token is refused, and generation lands somewhere else.
+- **Values have to be restricted to what the index holds.** Given a free-text
+  field, a small model puts the subject of the sentence in it: `ics:boxes`,
+  `ics:databases`, `ics:mail` on three consecutive questions. Restricting each
+  field to the values the index has actually seen makes that unrepresentable —
+  the same principle as CPE resolution above, where candidates come from the
+  data and never from free text. What that could not prevent was using a
+  *real* value as filler (`product:nginx` on a question about web servers), so
+  a vocabulary filter is dropped unless the question mentions its value.
+
+Self-consistency is not a cure. Sampling five times and keeping what a
+majority agree on does remove unstable guesses, but the errors that matter are
+stable: the model returned `auth:unknown` for "nobody needs a password for" in
+five samples out of five. Voting cannot outvote a consistent misreading, which
+is what GenSIE 2026 calls the constraint tax and arXiv:2608.25761 finds
+inference-time scaling does not recover at this size.
+
+The benchmarks live in `crusade_core::nlq` rather than in a test file, because
+a benchmark inside one engine's tests is not a benchmark.
 
 ## Matching CVEs to software NVD names differently
 
@@ -363,9 +414,59 @@ most, which is the prior doing its job — `Redis key-value store` fits
 product name the banner contains, so `Apache httpd` cannot be pulled to
 `apache:tomcat` by Tomcat's much larger CVE count.
 
-Every CVE found this way carries the tier and score in its detail. A resolved
-match is weaker evidence than an exact one and is never presented as the same
-thing. Turn it off with `resolve_cpe = false` under `[vuln]`.
+Token coverage is not enough on its own, and neither is rarity. `nmap-service-probes`
+asserts its own CPE for thousands of its rules, which is independent ground
+truth for exactly this mapping, curated by people who were not thinking about
+this resolver — `cargo run --release --example resolve_precision` scores
+against it. Weighing by how much of the two names overlap sent `Titan ftpd` to
+`netbsd:ftpd`, because a short generic name shares the common word completely
+while `southrivertech:titan_ftp_server` paid for its extra words. Weighing only
+by the rarest shared word answered nearly everything, dropping refusals from
+157 to 17 and nearly tripling the wrong answers. Both together, with rarity
+leading, is what the code does.
+
+On 571 names whose true CPE the vocabulary contains:
+
+| tier | answers | right product |
+|---|---|---|
+| exact | 124 | 84% |
+| lexical | 343 | 57% |
+| fuzzy | 35 | 77% |
+| refused | 69 | — |
+
+So this is useful and it is not reliable: 57% on the lexical tier, and 31% of
+all answers name the wrong product. That is why every CVE found this way
+carries its tier and score in the detail, why a resolved match is never
+presented as an exact one, and why `resolve_min_tier` exists — set it to
+`exact` for an index whose tags are acted on without being read, or
+`resolve_cpe = false` to go back to exact matching alone. The default is
+`lexical`, on the judgement that a 57%-correct CVE list that says how it was
+arrived at beats no CVE list at all.
+
+### Naming software from the banner alone
+
+`nmap-service-probes` is 12,000 hand-written patterns and still a fixed list:
+a banner it has no rule for yields no product, and no product means no CVE, no
+`product:` filter, and a host that appears as an open port and nothing else.
+
+The vocabulary closes part of that gap without a model. A banner usually names
+its product somewhere structural — a `Server:` header, after `SSH-2.0-`, in an
+FTP or SMTP greeting — so those names are extracted and put through the same
+resolution, and a service that gets its product this way is tagged
+`product-from-banner` with the port, tier and score.
+
+The bar is higher here than for resolving a name a fingerprint already
+produced. There, the string is known to be software and the only question is
+what NVD calls it. Here the question is whether this fragment of text names
+software at all, and a wrong answer attaches someone else's CVEs — so the
+fuzzy tier is refused outright, only the head of a banner is read (page content
+is where false positives live), and a banner naming no software is required to
+produce nothing.
+
+Whether the ~22M-parameter encoder the plan called for (arXiv:2404.00056) would
+do better is untested and stays that way until there is labelled scan data to
+test it on. A model shipped on the strength of a paper's F1, with no
+measurement on this index's banners, is a 22M-parameter guess.
 
 ### The tier that was removed
 
