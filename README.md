@@ -9,34 +9,6 @@ Shodan-style query language and a web UI — all from free, public data sources.
 It **catalogues** services (connect-and-read only). It does not exploit,
 brute-force, or attempt authentication against anything.
 
-## Responsible use (read this first)
-
-Crusade is a security-research tool. Scanning hosts you do not own or are not
-explicitly authorised to scan may be unlawful in your jurisdiction and will
-likely violate your ISP's or cloud provider's acceptable-use policy. **You are
-responsible for how you use it.**
-
-Built-in safeguards, on by default:
-
-- **Mandatory blocklist.** Private/reserved ranges are hard-coded skips in code
-  and can never be bypassed from the CLI. Add further opt-out networks to
-  `blocklist.txt` (or `crusade blocklist add <cidr>`).
-- **Connect-and-read, or a single SYN.** The only bytes Crusade sends are a
-  benign HTTP `GET`, a TLS handshake, and (with `--discovery-syn`) one bare SYN
-  per port that the kernel then RSTs, leaving no half-open connection on the
-  target. No exploit payloads, no auth attempts, no source-address spoofing.
-  Protocols are identified on any port, not assumed from the port number: a
-  silent service gets the GET after a 2 s wait, and a TLS handshake follows when
-  the reply indicates TLS.
-- **Conservative rate limits.** Targeted scans are gently rate-limited.
-  IPv4-wide sweep mode is **scaffolded but intentionally not run from a normal
-  machine**: it requires a sanctioned scanning VPS, an explicit high rate set in
-  config, and a reachable abuse contact / opt-out page (the ZMap
-  "good-internet-citizen" conventions). Enabling and running a sweep is the
-  operator's responsibility.
-
-Develop and test against the local docker rig (`docker/`) and your own hosts.
-
 ## Build
 
 ```
